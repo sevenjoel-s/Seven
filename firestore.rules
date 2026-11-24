@@ -1,0 +1,923 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: default deny everything
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ==================== PRIMITIVES & IDENTITY HELPERS ====================
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isBootstrappedSuperAdmin() {
+      return isVerified() && request.auth.token.email == 'sevenjoel326@gmail.com';
+    }
+
+    function userDocExists() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isActiveUser() {
+      return isVerified() && userDocExists() && getUserDoc().status == 'active';
+    }
+
+    function isSuperAdmin() {
+      return isBootstrappedSuperAdmin() || (isActiveUser() && getUserDoc().role == 'super_admin');
+    }
+
+    function isAdmin() {
+      return isBootstrappedSuperAdmin() || (
+        isActiveUser() && getUserDoc().role in ['super_admin', 'company_admin', 'it_admin']
+      );
+    }
+
+    function isHRManager() {
+      return isAdmin() || (isActiveUser() && getUserDoc().role == 'hr_manager');
+    }
+
+    function isApprovedEmployee() {
+      return isAdmin() || (
+        isActiveUser() && getUserDoc().accountType == 'employee'
+      );
+    }
+
+    function isSupportAgent() {
+      return isAdmin() || (
+        isActiveUser() &&
+        getUserDoc().accountType == 'employee' &&
+        getUserDoc().role in ['support_agent', 'department_manager', 'hr_manager', 'company_admin', 'super_admin']
+      );
+    }
+
+    // ==================== VALIDATION BLUEPRINTS ====================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'fullName', 'accountType', 'role', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid', 'email', 'fullName', 'phone', 'photoUrl', 'accountType', 'role',
+          'status', 'departmentId', 'departmentName', 'jobTitle', 'availability',
+          'mfaEnabled', 'biometricEnabled', 'forcePasswordChange', 'inviteId',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.email is string && data.email.size() > 2 && data.email.size() <= 200
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 40))
+        && (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500))
+        && data.accountType in ['employee', 'customer', 'external_guest']
+        && data.role in [
+          'super_admin', 'company_admin', 'it_admin', 'hr_manager', 'department_manager',
+          'meeting_admin', 'meeting_organizer', 'meeting_moderator', 'employee',
+          'support_agent', 'customer', 'external_guest'
+        ]
+        && data.status in ['active', 'pending_approval', 'suspended', 'deactivated', 'blocked']
+        && (!('departmentId' in data) || (data.departmentId is string && data.departmentId.size() <= 128))
+        && (!('departmentName' in data) || (data.departmentName is string && data.departmentName.size() <= 120))
+        && (!('jobTitle' in data) || (data.jobTitle is string && data.jobTitle.size() <= 120))
+        && (!('availability' in data) || data.availability in ['available', 'busy', 'dnd', 'away', 'offline'])
+        && (!('mfaEnabled' in data) || data.mfaEnabled is bool)
+        && (!('biometricEnabled' in data) || data.biometricEnabled is bool)
+        && (!('forcePasswordChange' in data) || data.forcePasswordChange is bool)
+        && (!('inviteId' in data) || (data.inviteId is string && data.inviteId.size() <= 128))
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidEmployeeDirectory(data) {
+      return data.keys().hasAll(['uid', 'fullName', 'role', 'availability', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'fullName', 'role', 'departmentId', 'departmentName', 'jobTitle', 'availability', 'photoUrl', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
+        && data.role is string && data.role.size() <= 64
+        && (!('departmentId' in data) || (data.departmentId is string && data.departmentId.size() <= 128))
+        && (!('departmentName' in data) || (data.departmentName is string && data.departmentName.size() <= 120))
+        && (!('jobTitle' in data) || (data.jobTitle is string && data.jobTitle.size() <= 120))
+        && data.availability in ['available', 'busy', 'dnd', 'away', 'offline']
+        && (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500))
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidCustomerDirectory(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'availability', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'photoUrl', 'availability', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
+        && data.availability in ['available', 'busy', 'dnd', 'away', 'offline']
+        && (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500))
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidDepartment(data) {
+      return data.keys().hasAll(['name', 'code', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['name', 'code', 'description', 'managerUid', 'isDemo', 'demoBatchId', 'createdAt', 'updatedAt'])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.code is string && data.code.size() >= 1 && data.code.size() <= 32
+        && (!('description' in data) || (data.description is string && data.description.size() <= 500))
+        && (!('managerUid' in data) || (data.managerUid is string && data.managerUid.size() <= 128))
+        && (!('isDemo' in data) || data.isDemo is bool)
+        && (!('demoBatchId' in data) || (data.demoBatchId is string && data.demoBatchId.size() <= 64))
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidRoleDef(data) {
+      return data.keys().hasAll(['key', 'name', 'permissions', 'isSystem', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['key', 'name', 'description', 'permissions', 'isSystem', 'createdAt', 'updatedAt'])
+        && data.key is string && data.key.size() >= 1 && data.key.size() <= 64
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && (!('description' in data) || (data.description is string && data.description.size() <= 400))
+        && data.permissions is list && data.permissions.size() <= 40
+        && (data.permissions.size() == 0 || data.permissions[0] is string)
+        && data.isSystem is bool
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidInvite(data) {
+      return data.keys().hasAll(['email', 'role', 'status', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['email', 'role', 'departmentId', 'departmentName', 'jobTitle', 'status', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.email is string && data.email.size() > 2 && data.email.size() <= 200
+        && data.role is string && data.role.size() >= 1 && data.role.size() <= 64
+        && (!('departmentId' in data) || (data.departmentId is string && data.departmentId.size() <= 128))
+        && (!('departmentName' in data) || (data.departmentName is string && data.departmentName.size() <= 120))
+        && (!('jobTitle' in data) || (data.jobTitle is string && data.jobTitle.size() <= 120))
+        && data.status in ['pending', 'claimed', 'revoked']
+        && data.createdBy is string && data.createdBy.size() <= 128
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidConversation(data) {
+      return data.keys().hasAll(['type', 'scope', 'name', 'createdBy', 'memberUids', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'type', 'scope', 'name', 'description', 'departmentId', 'orderId',
+          'createdBy', 'memberUids', 'adminUids', 'lastMessageText', 'lastMessageAt',
+          'createdAt', 'updatedAt'
+        ])
+        && data.type in ['direct_employee', 'group_employee', 'department', 'support', 'customer_community', 'customer_direct']
+        && data.scope in ['internal', 'support', 'customer']
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 140
+        && (!('description' in data) || (data.description is string && data.description.size() <= 500))
+        && (!('departmentId' in data) || (data.departmentId is string && data.departmentId.size() <= 128))
+        && (!('orderId' in data) || (data.orderId is string && data.orderId.size() <= 128))
+        && data.createdBy is string && data.createdBy.size() <= 128
+        && data.memberUids is list && data.memberUids.size() >= 1 && data.memberUids.size() <= 50
+        && data.memberUids[0] is string
+        && (!('adminUids' in data) || (data.adminUids is list && data.adminUids.size() <= 20 && (data.adminUids.size() == 0 || data.adminUids[0] is string)))
+        && (!('lastMessageText' in data) || (data.lastMessageText is string && data.lastMessageText.size() <= 500))
+        && (!('lastMessageAt' in data) || (data.lastMessageAt is string && data.lastMessageAt.size() <= 64))
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['senderUid', 'senderName', 'type', 'text', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'senderUid', 'senderName', 'senderAccountType', 'type', 'text',
+          'attachmentUrl', 'attachmentName', 'attachmentMime',
+          'replyToId', 'replyToPreview', 'forwardedFrom',
+          'pinned', 'edited', 'deleted', 'reactions', 'readBy', 'scheduledFor',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.senderUid)
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 120
+        && (!('senderAccountType' in data) || data.senderAccountType in ['employee', 'customer', 'external_guest'])
+        && data.type in ['text', 'image', 'video', 'audio', 'file', 'system']
+        && data.text is string && data.text.size() <= 4000
+        && (!('attachmentUrl' in data) || (data.attachmentUrl is string && data.attachmentUrl.size() <= 500))
+        && (!('attachmentName' in data) || (data.attachmentName is string && data.attachmentName.size() <= 200))
+        && (!('attachmentMime' in data) || (data.attachmentMime is string && data.attachmentMime.size() <= 120))
+        && (!('replyToId' in data) || (data.replyToId is string && data.replyToId.size() <= 128))
+        && (!('replyToPreview' in data) || (data.replyToPreview is string && data.replyToPreview.size() <= 300))
+        && (!('forwardedFrom' in data) || (data.forwardedFrom is string && data.forwardedFrom.size() <= 140))
+        && (!('pinned' in data) || data.pinned is bool)
+        && (!('edited' in data) || data.edited is bool)
+        && (!('deleted' in data) || data.deleted is bool)
+        && (!('reactions' in data) || data.reactions is map)
+        && (!('readBy' in data) || (data.readBy is list && data.readBy.size() <= 50 && (data.readBy.size() == 0 || data.readBy[0] is string)))
+        && (!('scheduledFor' in data) || (data.scheduledFor is string && data.scheduledFor.size() <= 64))
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidMeeting(data) {
+      return data.keys().hasAll(['title', 'meetingCode', 'hostUid', 'hostName', 'type', 'scope', 'status', 'startTime', 'endTime', 'participantUids', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'title', 'description', 'agenda', 'meetingCode', 'hostUid', 'hostName',
+          'type', 'scope', 'departmentId', 'priority', 'startTime', 'endTime',
+          'recurrence', 'waitingRoomEnabled', 'passcode', 'status',
+          'recordingConsentRequired', 'participantUids', 'documentUrls',
+          'isDemo', 'demoBatchId', 'createdAt', 'updatedAt'
+        ])
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && (!('description' in data) || (data.description is string && data.description.size() <= 1000))
+        && (!('agenda' in data) || (data.agenda is string && data.agenda.size() <= 2000))
+        && data.meetingCode is string && data.meetingCode.size() >= 4 && data.meetingCode.size() <= 32
+        && isValidId(data.hostUid)
+        && data.hostName is string && data.hostName.size() >= 1 && data.hostName.size() <= 120
+        && data.type in ['instant', 'scheduled', 'department', 'customer', 'external', 'recurring']
+        && data.scope in ['internal', 'customer', 'public_invite']
+        && (!('departmentId' in data) || (data.departmentId is string && data.departmentId.size() <= 128))
+        && (!('priority' in data) || data.priority in ['low', 'normal', 'high', 'urgent'])
+        && data.startTime is string && data.startTime.size() <= 64
+        && data.endTime is string && data.endTime.size() <= 64
+        && (!('recurrence' in data) || data.recurrence in ['none', 'daily', 'weekly', 'monthly'])
+        && (!('waitingRoomEnabled' in data) || data.waitingRoomEnabled is bool)
+        && (!('passcode' in data) || (data.passcode is string && data.passcode.size() <= 32))
+        && data.status in ['scheduled', 'live', 'ended', 'cancelled']
+        && (!('recordingConsentRequired' in data) || data.recordingConsentRequired is bool)
+        && data.participantUids is list && data.participantUids.size() >= 1 && data.participantUids.size() <= 100
+        && data.participantUids[0] is string
+        && (!('documentUrls' in data) || (data.documentUrls is list && data.documentUrls.size() <= 10 && (data.documentUrls.size() == 0 || data.documentUrls[0] is string)))
+        && (!('isDemo' in data) || data.isDemo is bool)
+        && (!('demoBatchId' in data) || (data.demoBatchId is string && data.demoBatchId.size() <= 64))
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidMeetingParticipant(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'status', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid', 'displayName', 'role', 'status', 'handRaised',
+          'micMuted', 'camOff', 'recordingConsented', 'durationSeconds',
+          'joinedAt', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
+        && data.role in ['host', 'co_host', 'moderator', 'participant', 'guest']
+        && data.status in ['invited', 'waiting', 'admitted', 'rejected', 'left']
+        && (!('handRaised' in data) || data.handRaised is bool)
+        && (!('micMuted' in data) || data.micMuted is bool)
+        && (!('camOff' in data) || data.camOff is bool)
+        && (!('recordingConsented' in data) || data.recordingConsented is bool)
+        && (!('durationSeconds' in data) || data.durationSeconds is number)
+        && (!('joinedAt' in data) || (data.joinedAt is string && data.joinedAt.size() <= 64))
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['name', 'sku', 'category', 'price', 'currency', 'stock', 'active', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['name', 'sku', 'category', 'description', 'price', 'currency', 'stock', 'imageUrl', 'active', 'createdBy', 'isDemo', 'demoBatchId', 'createdAt', 'updatedAt'])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 160
+        && data.sku is string && data.sku.size() >= 1 && data.sku.size() <= 64
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 80
+        && (!('description' in data) || (data.description is string && data.description.size() <= 1200))
+        && data.price is number && data.price >= 0
+        && data.currency is string && data.currency.size() >= 1 && data.currency.size() <= 8
+        && data.stock is number && data.stock >= 0
+        && (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 500))
+        && data.active is bool
+        && data.createdBy is string && data.createdBy.size() <= 128
+        && (!('isDemo' in data) || data.isDemo is bool)
+        && (!('demoBatchId' in data) || (data.demoBatchId is string && data.demoBatchId.size() <= 64))
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll(['orderNumber', 'invoiceNumber', 'customerUid', 'customerName', 'items', 'total', 'currency', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'orderNumber', 'invoiceNumber', 'customerUid', 'customerName', 'customerEmail',
+          'items', 'subtotal', 'tax', 'total', 'currency', 'status',
+          'shippingAddress', 'notes', 'isDemo', 'demoBatchId', 'createdAt', 'updatedAt'
+        ])
+        && data.orderNumber is string && data.orderNumber.size() >= 1 && data.orderNumber.size() <= 40
+        && data.invoiceNumber is string && data.invoiceNumber.size() >= 1 && data.invoiceNumber.size() <= 40
+        && isValidId(data.customerUid)
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120
+        && (!('customerEmail' in data) || (data.customerEmail is string && data.customerEmail.size() <= 200))
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 50
+        && (!('subtotal' in data) || data.subtotal is number)
+        && (!('tax' in data) || data.tax is number)
+        && data.total is number && data.total >= 0
+        && data.currency is string && data.currency.size() >= 1 && data.currency.size() <= 8
+        && data.status in ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled']
+        && (!('shippingAddress' in data) || (data.shippingAddress is string && data.shippingAddress.size() <= 300))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
+        && (!('isDemo' in data) || data.isDemo is bool)
+        && (!('demoBatchId' in data) || (data.demoBatchId is string && data.demoBatchId.size() <= 64))
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidFinancialTransaction(data) {
+      return data.keys().hasAll(['txNumber', 'customerUid', 'customerName', 'type', 'method', 'amount', 'currency', 'status', 'recordedByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'txNumber', 'orderId', 'orderNumber', 'invoiceNumber',
+          'customerUid', 'customerName', 'type', 'method',
+          'amount', 'currency', 'status', 'recordedByUid', 'approvedByUid',
+          'notes', 'isDemo', 'demoBatchId', 'createdAt', 'updatedAt'
+        ])
+        && data.txNumber is string && data.txNumber.size() >= 1 && data.txNumber.size() <= 40
+        && (!('orderId' in data) || (data.orderId is string && data.orderId.size() <= 128))
+        && (!('orderNumber' in data) || (data.orderNumber is string && data.orderNumber.size() <= 40))
+        && (!('invoiceNumber' in data) || (data.invoiceNumber is string && data.invoiceNumber.size() <= 40))
+        && isValidId(data.customerUid)
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120
+        && data.type in ['order_payment', 'refund', 'adjustment', 'payout']
+        && data.method in ['bank_transfer', 'card', 'cash_on_delivery', 'mobile_money', 'credit_adjustment']
+        && data.amount is number && data.amount >= 0
+        && data.currency is string && data.currency.size() >= 1 && data.currency.size() <= 8
+        && data.status in ['pending', 'completed', 'refunded', 'failed', 'cancelled']
+        && isValidId(data.recordedByUid)
+        && (!('approvedByUid' in data) || (data.approvedByUid is string && data.approvedByUid.size() <= 128))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
+        && (!('isDemo' in data) || data.isDemo is bool)
+        && (!('demoBatchId' in data) || (data.demoBatchId is string && data.demoBatchId.size() <= 64))
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidFeedback(data) {
+      return data.keys().hasAll(['customerUid', 'customerName', 'type', 'subject', 'message', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['customerUid', 'customerName', 'orderId', 'type', 'subject', 'message', 'rating', 'status', 'response', 'respondedBy', 'isDemo', 'demoBatchId', 'createdAt', 'updatedAt'])
+        && isValidId(data.customerUid)
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120
+        && (!('orderId' in data) || (data.orderId is string && data.orderId.size() <= 128))
+        && data.type in ['inquiry', 'complaint', 'feedback']
+        && data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 160
+        && data.message is string && data.message.size() >= 1 && data.message.size() <= 2000
+        && (!('rating' in data) || (data.rating is number && data.rating >= 1 && data.rating <= 5))
+        && data.status in ['open', 'in_review', 'resolved']
+        && (!('response' in data) || (data.response is string && data.response.size() <= 2000))
+        && (!('respondedBy' in data) || (data.respondedBy is string && data.respondedBy.size() <= 128))
+        && (!('isDemo' in data) || data.isDemo is bool)
+        && (!('demoBatchId' in data) || (data.demoBatchId is string && data.demoBatchId.size() <= 64))
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['targetUid', 'type', 'title', 'body', 'read', 'createdAt'])
+        && data.keys().hasOnly(['targetUid', 'type', 'title', 'body', 'linkTab', 'linkId', 'read', 'createdAt'])
+        && isValidId(data.targetUid)
+        && data.type in ['meeting', 'message', 'order', 'support', 'security', 'system']
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 140
+        && data.body is string && data.body.size() >= 1 && data.body.size() <= 500
+        && (!('linkTab' in data) || (data.linkTab is string && data.linkTab.size() <= 64))
+        && (!('linkId' in data) || (data.linkId is string && data.linkId.size() <= 128))
+        && data.read is bool
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['actorUid', 'action', 'targetType', 'severity', 'createdAt'])
+        && data.keys().hasOnly(['actorUid', 'actorEmail', 'actorRole', 'action', 'targetType', 'targetId', 'details', 'severity', 'createdAt'])
+        && isValidId(data.actorUid)
+        && (!('actorEmail' in data) || (data.actorEmail is string && data.actorEmail.size() <= 200))
+        && (!('actorRole' in data) || (data.actorRole is string && data.actorRole.size() <= 64))
+        && data.action is string && data.action.size() >= 1 && data.action.size() <= 120
+        && data.targetType is string && data.targetType.size() >= 1 && data.targetType.size() <= 64
+        && (!('targetId' in data) || (data.targetId is string && data.targetId.size() <= 128))
+        && (!('details' in data) || (data.details is string && data.details.size() <= 1000))
+        && data.severity in ['info', 'warning', 'critical']
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidSyncRecord(data) {
+      return data.keys().hasAll(['uid', 'deviceId', 'deviceName', 'syncType', 'status', 'itemsSynced', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'deviceId', 'deviceName', 'syncType', 'status', 'itemsSynced', 'errorMessage', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 128
+        && data.deviceName is string && data.deviceName.size() >= 1 && data.deviceName.size() <= 140
+        && data.syncType in ['messages', 'meetings', 'contacts', 'customer_data', 'full']
+        && data.status in ['synced', 'pending', 'failed']
+        && data.itemsSynced is number && data.itemsSynced >= 0
+        && (!('errorMessage' in data) || (data.errorMessage is string && data.errorMessage.size() <= 400))
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidBookmark(data) {
+      return data.keys().hasAll(['uid', 'conversationId', 'messageId', 'previewText', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'conversationId', 'messageId', 'previewText', 'senderName', 'createdAt'])
+        && isValidId(data.uid)
+        && isValidId(data.conversationId)
+        && isValidId(data.messageId)
+        && data.previewText is string && data.previewText.size() <= 400
+        && (!('senderName' in data) || (data.senderName is string && data.senderName.size() <= 120))
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidBlockedUser(data) {
+      return data.keys().hasAll(['uid', 'blockedUid', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'blockedUid', 'reason', 'createdAt'])
+        && isValidId(data.uid)
+        && isValidId(data.blockedUid)
+        && (!('reason' in data) || (data.reason is string && data.reason.size() <= 300))
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidModerationReport(data) {
+      return data.keys().hasAll(['reporterUid', 'targetUid', 'reason', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['reporterUid', 'targetUid', 'conversationId', 'messageId', 'reason', 'status', 'createdAt', 'updatedAt'])
+        && isValidId(data.reporterUid)
+        && isValidId(data.targetUid)
+        && (!('conversationId' in data) || (data.conversationId is string && data.conversationId.size() <= 128))
+        && (!('messageId' in data) || (data.messageId is string && data.messageId.size() <= 128))
+        && data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 500
+        && data.status in ['open', 'reviewed', 'resolved']
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    // ==================== COLLECTION RULES ====================
+
+    // 1. Users (Strict PII Isolation & Anti-Privilege-Escalation)
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin() || isHRManager();
+      allow list: if isAdmin() || isHRManager();
+      allow create: if isVerified()
+        && isValidId(userId)
+        && userId == request.auth.uid
+        && isValidUser(incoming())
+        && incoming().uid == request.auth.uid
+        && (
+          (isBootstrappedSuperAdmin() && incoming().accountType == 'employee' && incoming().role == 'super_admin' && incoming().status == 'active') ||
+          (incoming().accountType == 'customer' && incoming().role == 'customer' && incoming().status == 'active') ||
+          (incoming().accountType == 'external_guest' && incoming().role == 'external_guest' && incoming().status == 'active') ||
+          (incoming().accountType == 'employee' && incoming().role == 'employee' && incoming().status == 'pending_approval') ||
+          (
+            incoming().accountType == 'employee' &&
+            'inviteId' in incoming() &&
+            exists(/databases/$(database)/documents/employeeInvites/$(incoming().inviteId)) &&
+            get(/databases/$(database)/documents/employeeInvites/$(incoming().inviteId)).data.email == request.auth.token.email &&
+            get(/databases/$(database)/documents/employeeInvites/$(incoming().inviteId)).data.status == 'pending' &&
+            incoming().role == get(/databases/$(database)/documents/employeeInvites/$(incoming().inviteId)).data.role &&
+            incoming().status == 'active'
+          )
+        );
+      allow update: if isVerified()
+        && isValidId(userId)
+        && isValidUser(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && (
+          isAdmin() ||
+          isHRManager() ||
+          (
+            isOwner(userId) &&
+            incoming().role == existing().role &&
+            incoming().accountType == existing().accountType &&
+            incoming().status == existing().status &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'fullName', 'phone', 'photoUrl', 'availability', 'mfaEnabled', 'biometricEnabled', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isSuperAdmin();
+    }
+
+    // 2. Employee Directory (Isolated from Customers)
+    match /employeeDirectory/{userId} {
+      allow get: if isValidId(userId) && isApprovedEmployee();
+      allow list: if isApprovedEmployee();
+      allow create, update: if isVerified()
+        && isValidId(userId)
+        && isValidEmployeeDirectory(incoming())
+        && incoming().uid == userId
+        && (
+          isAdmin() ||
+          isHRManager() ||
+          (isOwner(userId) && isApprovedEmployee())
+        );
+      allow delete: if isAdmin() || isHRManager();
+    }
+
+    // 3. Customer Community Directory
+    match /customerDirectory/{userId} {
+      allow get: if isValidId(userId) && isVerified();
+      allow list: if isVerified();
+      allow create, update: if isVerified()
+        && isValidId(userId)
+        && isValidCustomerDirectory(incoming())
+        && incoming().uid == userId
+        && (isOwner(userId) || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // 4. Departments (Internal Only)
+    match /departments/{departmentId} {
+      allow get: if isValidId(departmentId) && isApprovedEmployee();
+      allow list: if isApprovedEmployee();
+      allow create, update: if isValidId(departmentId) && isValidDepartment(incoming()) && (isAdmin() || isHRManager());
+      allow delete: if isValidId(departmentId) && isAdmin();
+    }
+
+    // 5. RBAC Roles (Internal Only)
+    match /roles/{roleId} {
+      allow get: if isValidId(roleId) && isApprovedEmployee();
+      allow list: if isApprovedEmployee();
+      allow create, update: if isValidId(roleId) && isValidRoleDef(incoming()) && isSuperAdmin();
+      allow delete: if isValidId(roleId) && isSuperAdmin() && existing().isSystem == false;
+    }
+
+    // 6. Employee Invites
+    match /employeeInvites/{inviteId} {
+      allow get: if isValidId(inviteId) && (isAdmin() || isHRManager() || (isVerified() && existing().email == request.auth.token.email));
+      allow list: if isAdmin() || isHRManager() || (isVerified() && resource.data.email == request.auth.token.email);
+      allow create: if isValidId(inviteId) && isValidInvite(incoming()) && (isAdmin() || isHRManager());
+      allow update: if isValidId(inviteId) && isValidInvite(incoming()) && (
+        isAdmin() ||
+        isHRManager() ||
+        (
+          isVerified() &&
+          existing().email == request.auth.token.email &&
+          existing().status == 'pending' &&
+          incoming().status == 'claimed' &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+        )
+      );
+      allow delete: if isValidId(inviteId) && (isAdmin() || isHRManager());
+    }
+
+    // 7. Public Support Routing & App Demo Toggle Config (Non-PII)
+    match /publicConfig/{docId} {
+      allow get: if isValidId(docId) && isVerified();
+      allow list: if false;
+      allow create, update: if isValidId(docId) && (
+        (
+          docId == 'supportRouting' && (isAdmin() || isSupportAgent())
+          && incoming().keys().hasAll(['agentUids', 'updatedAt'])
+          && incoming().keys().hasOnly(['agentUids', 'updatedAt'])
+          && incoming().agentUids is list && incoming().agentUids.size() <= 50
+          && (incoming().agentUids.size() == 0 || incoming().agentUids[0] is string)
+          && incoming().updatedAt is string && incoming().updatedAt.size() <= 64
+        ) || (
+          docId == 'appSettings' && isAdmin()
+          && incoming().keys().hasAll(['showDemoData', 'updatedAt'])
+          && incoming().keys().hasOnly(['showDemoData', 'updatedAt'])
+          && incoming().showDemoData is bool
+          && incoming().updatedAt is string && incoming().updatedAt.size() <= 64
+        )
+      );
+      allow delete: if false;
+    }
+
+    // 8. Conversations & Messages (Master Gate + Internal/Customer Scope Isolation)
+    match /conversations/{conversationId} {
+      allow get: if isValidId(conversationId) && isVerified() && (
+        request.auth.uid in existing().memberUids ||
+        (existing().scope == 'internal' && isApprovedEmployee()) ||
+        (existing().scope == 'support' && isSupportAgent()) ||
+        existing().type == 'customer_community' ||
+        isAdmin()
+      );
+      allow list: if isVerified() && (
+        request.auth.uid in resource.data.memberUids ||
+        resource.data.type == 'customer_community' ||
+        (resource.data.scope == 'internal' && isApprovedEmployee()) ||
+        (resource.data.scope == 'support' && isSupportAgent()) ||
+        isAdmin()
+      );
+      allow create: if isValidId(conversationId)
+        && isVerified()
+        && isValidConversation(incoming())
+        && incoming().createdBy == request.auth.uid
+        && request.auth.uid in incoming().memberUids
+        && (
+          (incoming().scope == 'internal' && isApprovedEmployee()) ||
+          (incoming().scope == 'support' && (isActiveUser() || isBootstrappedSuperAdmin())) ||
+          (incoming().scope == 'customer' && (isActiveUser() || isBootstrappedSuperAdmin()))
+        );
+      allow update: if isValidId(conversationId)
+        && isVerified()
+        && isValidConversation(incoming())
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().scope == existing().scope
+        && (
+          isAdmin() ||
+          (
+            (request.auth.uid in existing().memberUids || (existing().scope == 'support' && isSupportAgent())) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'description', 'memberUids', 'adminUids', 'lastMessageText', 'lastMessageAt', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isValidId(conversationId) && (isAdmin() || (isVerified() && existing().createdBy == request.auth.uid));
+
+      match /members/{memberUid} {
+        allow get: if isValidId(memberUid) && isVerified() && (
+          isOwner(memberUid) ||
+          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.memberUids ||
+          isAdmin()
+        );
+        allow list: if isVerified() && (
+          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.memberUids ||
+          isAdmin()
+        );
+        allow create, update: if isValidId(memberUid) && isVerified()
+          && incoming().keys().hasAll(['uid', 'displayName', 'role', 'joinedAt'])
+          && incoming().keys().hasOnly(['uid', 'displayName', 'role', 'joinedAt'])
+          && incoming().uid is string && incoming().uid.size() <= 128
+          && incoming().displayName is string && incoming().displayName.size() <= 120
+          && incoming().role in ['admin', 'member']
+          && incoming().joinedAt is string && incoming().joinedAt.size() <= 64
+          && (
+            request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.memberUids ||
+            isAdmin()
+          );
+        allow delete: if isValidId(memberUid) && (isOwner(memberUid) || isAdmin());
+      }
+
+      match /messages/{messageId} {
+        allow get: if isValidId(messageId) && isVerified() && (
+          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.memberUids ||
+          get(/databases/$(database)/documents/conversations/$(conversationId)).data.type == 'customer_community' ||
+          (get(/databases/$(database)/documents/conversations/$(conversationId)).data.scope == 'support' && isSupportAgent()) ||
+          isAdmin()
+        );
+        allow list: if isVerified() && (
+          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.memberUids ||
+          get(/databases/$(database)/documents/conversations/$(conversationId)).data.type == 'customer_community' ||
+          (get(/databases/$(database)/documents/conversations/$(conversationId)).data.scope == 'support' && isSupportAgent()) ||
+          isAdmin()
+        );
+        allow create: if isValidId(messageId)
+          && isVerified()
+          && isValidMessage(incoming())
+          && incoming().senderUid == request.auth.uid
+          && (
+            request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.memberUids ||
+            get(/databases/$(database)/documents/conversations/$(conversationId)).data.type == 'customer_community' ||
+            (get(/databases/$(database)/documents/conversations/$(conversationId)).data.scope == 'support' && isSupportAgent()) ||
+            isAdmin()
+          );
+        allow update: if isValidId(messageId)
+          && isVerified()
+          && isValidMessage(incoming())
+          && incoming().senderUid == existing().senderUid
+          && incoming().createdAt == existing().createdAt
+          && (
+            isAdmin() ||
+            (
+              existing().senderUid == request.auth.uid &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['text', 'edited', 'deleted', 'pinned', 'updatedAt'])
+            ) ||
+            (
+              (
+                request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.memberUids ||
+                get(/databases/$(database)/documents/conversations/$(conversationId)).data.type == 'customer_community'
+              ) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['reactions', 'readBy', 'pinned', 'updatedAt'])
+            )
+          );
+        allow delete: if isValidId(messageId) && (isAdmin() || (isVerified() && existing().senderUid == request.auth.uid));
+      }
+    }
+
+    // 9. Meetings & Subcollections
+    match /meetings/{meetingId} {
+      allow get: if isValidId(meetingId) && isVerified() && (
+        existing().hostUid == request.auth.uid ||
+        request.auth.uid in existing().participantUids ||
+        existing().scope == 'public_invite' ||
+        (existing().scope == 'internal' && isApprovedEmployee()) ||
+        isAdmin()
+      );
+      allow list: if isVerified() && (
+        resource.data.hostUid == request.auth.uid ||
+        request.auth.uid in resource.data.participantUids ||
+        resource.data.scope == 'public_invite' ||
+        (resource.data.scope == 'internal' && isApprovedEmployee()) ||
+        isAdmin()
+      );
+      allow create: if isValidId(meetingId)
+        && isVerified()
+        && isValidMeeting(incoming())
+        && incoming().hostUid == request.auth.uid
+        && (isApprovedEmployee() || isAdmin());
+      allow update: if isValidId(meetingId)
+        && isVerified()
+        && isValidMeeting(incoming())
+        && incoming().hostUid == existing().hostUid
+        && incoming().createdAt == existing().createdAt
+        && (
+          isAdmin() ||
+          existing().hostUid == request.auth.uid ||
+          (
+            request.auth.uid in existing().participantUids &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['participantUids', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(meetingId) && (isAdmin() || (isVerified() && existing().hostUid == request.auth.uid));
+
+      match /participants/{participantUid} {
+        allow get, list: if isVerified() && (
+          get(/databases/$(database)/documents/meetings/$(meetingId)).data.hostUid == request.auth.uid ||
+          request.auth.uid in get(/databases/$(database)/documents/meetings/$(meetingId)).data.participantUids ||
+          get(/databases/$(database)/documents/meetings/$(meetingId)).data.scope == 'public_invite' ||
+          isAdmin()
+        );
+        allow create, update: if isValidId(participantUid)
+          && isVerified()
+          && isValidMeetingParticipant(incoming())
+          && (
+            isOwner(participantUid) ||
+            get(/databases/$(database)/documents/meetings/$(meetingId)).data.hostUid == request.auth.uid ||
+            isAdmin()
+          );
+        allow delete: if isValidId(participantUid) && (
+          isOwner(participantUid) ||
+          get(/databases/$(database)/documents/meetings/$(meetingId)).data.hostUid == request.auth.uid ||
+          isAdmin()
+        );
+      }
+    }
+
+    // 10. Products (Customer Catalog)
+    match /products/{productId} {
+      allow get: if isValidId(productId) && (existing().active == true || isApprovedEmployee() || isAdmin());
+      allow list: if resource.data.active == true || isApprovedEmployee() || isAdmin();
+      allow create, update: if isValidId(productId) && isValidProduct(incoming()) && (isAdmin() || isApprovedEmployee());
+      allow delete: if isValidId(productId) && isAdmin();
+    }
+
+    // 11. Customer Orders
+    match /orders/{orderId} {
+      allow get: if isValidId(orderId) && isVerified() && (
+        existing().customerUid == request.auth.uid ||
+        isSupportAgent() ||
+        isAdmin()
+      );
+      allow list: if isVerified() && (
+        resource.data.customerUid == request.auth.uid ||
+        isSupportAgent() ||
+        isAdmin()
+      );
+      allow create: if isValidId(orderId)
+        && isVerified()
+        && isValidOrder(incoming())
+        && (
+          (incoming().customerUid == request.auth.uid && incoming().status == 'pending' && (!('isDemo' in incoming()) || incoming().isDemo == false)) ||
+          isAdmin()
+        );
+      allow update: if isValidId(orderId)
+        && isVerified()
+        && isValidOrder(incoming())
+        && incoming().customerUid == existing().customerUid
+        && incoming().createdAt == existing().createdAt
+        && (
+          isAdmin() ||
+          isSupportAgent() ||
+          (
+            existing().customerUid == request.auth.uid &&
+            existing().status in ['pending', 'confirmed'] &&
+            incoming().status == 'cancelled' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(orderId) && isAdmin() && existing().isDemo == true;
+    }
+
+    // 12. Financial Transactions Ledger (Audit-backed, real transactions non-deletable)
+    match /financialTransactions/{txId} {
+      allow get: if isValidId(txId) && isVerified() && (
+        existing().customerUid == request.auth.uid ||
+        isSupportAgent() ||
+        isAdmin()
+      );
+      allow list: if isVerified() && (
+        resource.data.customerUid == request.auth.uid ||
+        isSupportAgent() ||
+        isAdmin()
+      );
+      allow create: if isValidId(txId)
+        && isVerified()
+        && isValidFinancialTransaction(incoming())
+        && (
+          (
+            incoming().customerUid == request.auth.uid &&
+            incoming().recordedByUid == request.auth.uid &&
+            incoming().type == 'order_payment' &&
+            incoming().status in ['pending', 'completed'] &&
+            (!('isDemo' in incoming()) || incoming().isDemo == false)
+          ) ||
+          isSupportAgent() ||
+          isAdmin()
+        );
+      allow update: if isValidId(txId)
+        && isVerified()
+        && isValidFinancialTransaction(incoming())
+        && incoming().txNumber == existing().txNumber
+        && incoming().createdAt == existing().createdAt
+        && (isAdmin() || isSupportAgent());
+      allow delete: if isValidId(txId) && isAdmin() && existing().isDemo == true;
+    }
+
+    // 13. Customer Feedback & Inquiries
+    match /customerFeedback/{feedbackId} {
+      allow get: if isValidId(feedbackId) && isVerified() && (
+        existing().customerUid == request.auth.uid ||
+        isSupportAgent() ||
+        isAdmin()
+      );
+      allow list: if isVerified() && (
+        resource.data.customerUid == request.auth.uid ||
+        isSupportAgent() ||
+        isAdmin()
+      );
+      allow create: if isValidId(feedbackId)
+        && isVerified()
+        && isValidFeedback(incoming())
+        && (
+          (incoming().customerUid == request.auth.uid && incoming().status == 'open' && (!('isDemo' in incoming()) || incoming().isDemo == false)) ||
+          isAdmin()
+        );
+      allow update: if isValidId(feedbackId)
+        && isVerified()
+        && isValidFeedback(incoming())
+        && incoming().customerUid == existing().customerUid
+        && (isAdmin() || isSupportAgent());
+      allow delete: if isValidId(feedbackId) && isAdmin();
+    }
+
+    // 14. Notifications (Strictly Private to Target User)
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && isVerified() && (existing().targetUid == request.auth.uid || isAdmin());
+      allow list: if isVerified() && resource.data.targetUid == request.auth.uid;
+      allow create: if isValidId(notificationId) && isVerified() && isValidNotification(incoming());
+      allow update: if isValidId(notificationId)
+        && isValidNotification(incoming())
+        && isVerified()
+        && existing().targetUid == request.auth.uid
+        && incoming().targetUid == existing().targetUid
+        && incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      allow delete: if isValidId(notificationId) && isVerified() && (existing().targetUid == request.auth.uid || isAdmin());
+    }
+
+    // 15. Security Audit Logs (Append-only, Admin Read)
+    match /auditLogs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(logId)
+        && isVerified()
+        && isValidAuditLog(incoming())
+        && incoming().actorUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // 16. Sync Records
+    match /syncRecords/{syncId} {
+      allow get: if isValidId(syncId) && isVerified() && (existing().uid == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isValidId(syncId) && isVerified() && isValidSyncRecord(incoming()) && incoming().uid == request.auth.uid;
+      allow update: if isValidId(syncId) && isVerified() && isValidSyncRecord(incoming()) && existing().uid == request.auth.uid && incoming().uid == existing().uid;
+      allow delete: if isValidId(syncId) && isVerified() && (existing().uid == request.auth.uid || isAdmin());
+    }
+
+    // 17. Bookmarks, Blocked Users & Moderation Reports
+    match /userBookmarks/{bookmarkId} {
+      allow get: if isValidId(bookmarkId) && isVerified() && existing().uid == request.auth.uid;
+      allow list: if isVerified() && resource.data.uid == request.auth.uid;
+      allow create: if isValidId(bookmarkId) && isVerified() && isValidBookmark(incoming()) && incoming().uid == request.auth.uid;
+      allow update: if false;
+      allow delete: if isValidId(bookmarkId) && isVerified() && existing().uid == request.auth.uid;
+    }
+
+    match /blockedUsers/{blockId} {
+      allow get: if isValidId(blockId) && isVerified() && existing().uid == request.auth.uid;
+      allow list: if isVerified() && resource.data.uid == request.auth.uid;
+      allow create: if isValidId(blockId) && isVerified() && isValidBlockedUser(incoming()) && incoming().uid == request.auth.uid;
+      allow update: if false;
+      allow delete: if isValidId(blockId) && isVerified() && existing().uid == request.auth.uid;
+    }
+
+    match /moderationReports/{reportId} {
+      allow get: if isValidId(reportId) && isVerified() && (existing().reporterUid == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.reporterUid == request.auth.uid || isAdmin());
+      allow create: if isValidId(reportId) && isVerified() && isValidModerationReport(incoming()) && incoming().reporterUid == request.auth.uid && incoming().status == 'open';
+      allow update: if isValidId(reportId) && isAdmin() && isValidModerationReport(incoming());
+      allow delete: if isValidId(reportId) && isAdmin();
+    }
+  }
+}

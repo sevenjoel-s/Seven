@@ -1,0 +1,490 @@
+{
+  "entities": {
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Private user account record with role, accountType, verification, and security settings.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "photoUrl": { "type": "string", "maxLength": 500 },
+        "accountType": { "type": "string", "enum": ["employee", "customer", "external_guest"] },
+        "role": { "type": "string", "enum": ["super_admin", "company_admin", "it_admin", "hr_manager", "department_manager", "meeting_admin", "meeting_organizer", "meeting_moderator", "employee", "support_agent", "customer", "external_guest"] },
+        "status": { "type": "string", "enum": ["active", "pending_approval", "suspended", "deactivated", "blocked"] },
+        "departmentId": { "type": "string", "maxLength": 128 },
+        "departmentName": { "type": "string", "maxLength": 120 },
+        "jobTitle": { "type": "string", "maxLength": 120 },
+        "availability": { "type": "string", "enum": ["available", "busy", "dnd", "away", "offline"] },
+        "mfaEnabled": { "type": "boolean" },
+        "biometricEnabled": { "type": "boolean" },
+        "forcePasswordChange": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "fullName", "accountType", "role", "status", "createdAt", "updatedAt"]
+    },
+    "EmployeeDirectoryEntry": {
+      "title": "EmployeeDirectoryEntry",
+      "description": "Non-PII internal employee directory entry visible only to approved employees and admins.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": { "type": "string", "maxLength": 64 },
+        "departmentId": { "type": "string", "maxLength": 128 },
+        "departmentName": { "type": "string", "maxLength": 120 },
+        "jobTitle": { "type": "string", "maxLength": 120 },
+        "availability": { "type": "string", "enum": ["available", "busy", "dnd", "away", "offline"] },
+        "photoUrl": { "type": "string", "maxLength": 500 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "fullName", "role", "availability", "updatedAt"]
+    },
+    "CustomerDirectoryEntry": {
+      "title": "CustomerDirectoryEntry",
+      "description": "Non-PII customer community profile visible to verified community members.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "photoUrl": { "type": "string", "maxLength": 500 },
+        "availability": { "type": "string", "enum": ["available", "busy", "dnd", "away", "offline"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "availability", "updatedAt"]
+    },
+    "Department": {
+      "title": "Department",
+      "description": "Company organizational department.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "code": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "description": { "type": "string", "maxLength": 500 },
+        "managerUid": { "type": "string", "maxLength": 128 },
+        "isDemo": { "type": "boolean" },
+        "demoBatchId": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "code", "createdAt", "updatedAt"]
+    },
+    "RoleDefinition": {
+      "title": "RoleDefinition",
+      "description": "Configurable RBAC role and module permission matrix.",
+      "type": "object",
+      "properties": {
+        "key": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 400 },
+        "permissions": { "type": "array", "maxLength": 40 },
+        "isSystem": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["key", "name", "permissions", "isSystem", "createdAt", "updatedAt"]
+    },
+    "EmployeeInvite": {
+      "title": "EmployeeInvite",
+      "description": "Admin-issued employee pre-authorization record.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "role": { "type": "string", "maxLength": 64 },
+        "departmentId": { "type": "string", "maxLength": 128 },
+        "departmentName": { "type": "string", "maxLength": 120 },
+        "jobTitle": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["pending", "claimed", "revoked"] },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "role", "status", "createdBy", "createdAt", "updatedAt"]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "Messaging channel or 1:1 thread with strict internal/support/customer scope isolation.",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["direct_employee", "group_employee", "department", "support", "customer_community", "customer_direct"] },
+        "scope": { "type": "string", "enum": ["internal", "support", "customer"] },
+        "name": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "description": { "type": "string", "maxLength": 500 },
+        "departmentId": { "type": "string", "maxLength": 128 },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array", "maxLength": 50 },
+        "adminUids": { "type": "array", "maxLength": 20 },
+        "lastMessageText": { "type": "string", "maxLength": 500 },
+        "lastMessageAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["type", "scope", "name", "createdBy", "memberUids", "createdAt", "updatedAt"]
+    },
+    "ConversationMember": {
+      "title": "ConversationMember",
+      "description": "Membership record for Master Gate access control.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["admin", "member"] },
+        "joinedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "role", "joinedAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Real-time message inside a conversation.",
+      "type": "object",
+      "properties": {
+        "senderUid": { "type": "string", "maxLength": 128 },
+        "senderName": { "type": "string", "maxLength": 120 },
+        "senderAccountType": { "type": "string", "enum": ["employee", "customer", "external_guest"] },
+        "type": { "type": "string", "enum": ["text", "image", "video", "audio", "file", "system"] },
+        "text": { "type": "string", "maxLength": 4000 },
+        "attachmentUrl": { "type": "string", "maxLength": 500 },
+        "attachmentName": { "type": "string", "maxLength": 200 },
+        "attachmentMime": { "type": "string", "maxLength": 120 },
+        "replyToId": { "type": "string", "maxLength": 128 },
+        "replyToPreview": { "type": "string", "maxLength": 300 },
+        "forwardedFrom": { "type": "string", "maxLength": 140 },
+        "pinned": { "type": "boolean" },
+        "edited": { "type": "boolean" },
+        "deleted": { "type": "boolean" },
+        "reactions": { "type": "object" },
+        "readBy": { "type": "array", "maxLength": 50 },
+        "scheduledFor": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderUid", "senderName", "type", "text", "createdAt", "updatedAt"]
+    },
+    "Meeting": {
+      "title": "Meeting",
+      "description": "Scheduled or instant online meeting with agenda, waiting room, and participant list.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "agenda": { "type": "string", "maxLength": 2000 },
+        "meetingCode": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "hostUid": { "type": "string", "maxLength": 128 },
+        "hostName": { "type": "string", "maxLength": 120 },
+        "type": { "type": "string", "enum": ["instant", "scheduled", "department", "customer", "external", "recurring"] },
+        "scope": { "type": "string", "enum": ["internal", "customer", "public_invite"] },
+        "departmentId": { "type": "string", "maxLength": 128 },
+        "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
+        "startTime": { "type": "string", "maxLength": 64 },
+        "endTime": { "type": "string", "maxLength": 64 },
+        "recurrence": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"] },
+        "waitingRoomEnabled": { "type": "boolean" },
+        "passcode": { "type": "string", "maxLength": 32 },
+        "status": { "type": "string", "enum": ["scheduled", "live", "ended", "cancelled"] },
+        "recordingConsentRequired": { "type": "boolean" },
+        "participantUids": { "type": "array", "maxLength": 100 },
+        "documentUrls": { "type": "array", "maxLength": 10 },
+        "isDemo": { "type": "boolean" },
+        "demoBatchId": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "meetingCode", "hostUid", "hostName", "type", "scope", "status", "startTime", "endTime", "participantUids", "createdAt", "updatedAt"]
+    },
+    "MeetingParticipant": {
+      "title": "MeetingParticipant",
+      "description": "Participant state, waiting room status, and attendance record.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["host", "co_host", "moderator", "participant", "guest"] },
+        "status": { "type": "string", "enum": ["invited", "waiting", "admitted", "rejected", "left"] },
+        "handRaised": { "type": "boolean" },
+        "micMuted": { "type": "boolean" },
+        "camOff": { "type": "boolean" },
+        "recordingConsented": { "type": "boolean" },
+        "durationSeconds": { "type": "number" },
+        "joinedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "role", "status", "updatedAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Company product or service item available in the customer portal.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "sku": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 1200 },
+        "price": { "type": "number" },
+        "currency": { "type": "string", "maxLength": 8 },
+        "stock": { "type": "number" },
+        "imageUrl": { "type": "string", "maxLength": 500 },
+        "active": { "type": "boolean" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "isDemo": { "type": "boolean" },
+        "demoBatchId": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "sku", "category", "price", "currency", "stock", "active", "createdBy", "createdAt", "updatedAt"]
+    },
+    "CustomerOrder": {
+      "title": "CustomerOrder",
+      "description": "Customer purchase order with tracking and invoice metadata.",
+      "type": "object",
+      "properties": {
+        "orderNumber": { "type": "string", "maxLength": 40 },
+        "invoiceNumber": { "type": "string", "maxLength": 40 },
+        "customerUid": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 120 },
+        "customerEmail": { "type": "string", "maxLength": 200 },
+        "items": { "type": "array", "maxLength": 50 },
+        "subtotal": { "type": "number" },
+        "tax": { "type": "number" },
+        "total": { "type": "number" },
+        "currency": { "type": "string", "maxLength": 8 },
+        "status": { "type": "string", "enum": ["pending", "confirmed", "processing", "shipped", "delivered", "cancelled"] },
+        "shippingAddress": { "type": "string", "maxLength": 300 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "isDemo": { "type": "boolean" },
+        "demoBatchId": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderNumber", "invoiceNumber", "customerUid", "customerName", "items", "total", "currency", "status", "createdAt", "updatedAt"]
+    },
+    "FinancialTransaction": {
+      "title": "FinancialTransaction",
+      "description": "Immutable financial ledger record linked to orders, invoices, refunds, and adjustments.",
+      "type": "object",
+      "properties": {
+        "txNumber": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "orderNumber": { "type": "string", "maxLength": 40 },
+        "invoiceNumber": { "type": "string", "maxLength": 40 },
+        "customerUid": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 120 },
+        "type": { "type": "string", "enum": ["order_payment", "refund", "adjustment", "payout"] },
+        "method": { "type": "string", "enum": ["bank_transfer", "card", "cash_on_delivery", "mobile_money", "credit_adjustment"] },
+        "amount": { "type": "number" },
+        "currency": { "type": "string", "maxLength": 8 },
+        "status": { "type": "string", "enum": ["pending", "completed", "refunded", "failed", "cancelled"] },
+        "recordedByUid": { "type": "string", "maxLength": 128 },
+        "approvedByUid": { "type": "string", "maxLength": 128 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "isDemo": { "type": "boolean" },
+        "demoBatchId": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["txNumber", "customerUid", "customerName", "type", "method", "amount", "currency", "status", "recordedByUid", "createdAt", "updatedAt"]
+    },
+    "CustomerFeedback": {
+      "title": "CustomerFeedback",
+      "description": "Customer inquiry, complaint, or rating linked to optional order.",
+      "type": "object",
+      "properties": {
+        "customerUid": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 120 },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["inquiry", "complaint", "feedback"] },
+        "subject": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "rating": { "type": "number" },
+        "status": { "type": "string", "enum": ["open", "in_review", "resolved"] },
+        "response": { "type": "string", "maxLength": 2000 },
+        "respondedBy": { "type": "string", "maxLength": 128 },
+        "isDemo": { "type": "boolean" },
+        "demoBatchId": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["customerUid", "customerName", "type", "subject", "message", "status", "createdAt", "updatedAt"]
+    },
+    "NotificationItem": {
+      "title": "NotificationItem",
+      "description": "User-targeted real-time notification.",
+      "type": "object",
+      "properties": {
+        "targetUid": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["meeting", "message", "order", "support", "security", "system"] },
+        "title": { "type": "string", "maxLength": 140 },
+        "body": { "type": "string", "maxLength": 500 },
+        "linkTab": { "type": "string", "maxLength": 64 },
+        "linkId": { "type": "string", "maxLength": 128 },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["targetUid", "type", "title", "body", "read", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable security and administrative audit record.",
+      "type": "object",
+      "properties": {
+        "actorUid": { "type": "string", "maxLength": 128 },
+        "actorEmail": { "type": "string", "maxLength": 200 },
+        "actorRole": { "type": "string", "maxLength": 64 },
+        "action": { "type": "string", "maxLength": 120 },
+        "targetType": { "type": "string", "maxLength": 64 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "details": { "type": "string", "maxLength": 1000 },
+        "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorUid", "action", "targetType", "severity", "createdAt"]
+    },
+    "SyncRecord": {
+      "title": "SyncRecord",
+      "description": "Encrypted device synchronization checkpoint and error log.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "deviceId": { "type": "string", "maxLength": 128 },
+        "deviceName": { "type": "string", "maxLength": 140 },
+        "syncType": { "type": "string", "enum": ["messages", "meetings", "contacts", "customer_data", "full"] },
+        "status": { "type": "string", "enum": ["synced", "pending", "failed"] },
+        "itemsSynced": { "type": "number" },
+        "errorMessage": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "deviceId", "deviceName", "syncType", "status", "itemsSynced", "createdAt", "updatedAt"]
+    },
+    "UserBookmark": {
+      "title": "UserBookmark",
+      "description": "Bookmarked message saved by a user.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "conversationId": { "type": "string", "maxLength": 128 },
+        "messageId": { "type": "string", "maxLength": 128 },
+        "previewText": { "type": "string", "maxLength": 400 },
+        "senderName": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "conversationId", "messageId", "previewText", "createdAt"]
+    },
+    "BlockedUser": {
+      "title": "BlockedUser",
+      "description": "User block record for privacy and moderation.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "blockedUid": { "type": "string", "maxLength": 128 },
+        "reason": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "blockedUid", "createdAt"]
+    },
+    "ModerationReport": {
+      "title": "ModerationReport",
+      "description": "Spam or abuse report submitted by a user.",
+      "type": "object",
+      "properties": {
+        "reporterUid": { "type": "string", "maxLength": 128 },
+        "targetUid": { "type": "string", "maxLength": 128 },
+        "conversationId": { "type": "string", "maxLength": 128 },
+        "messageId": { "type": "string", "maxLength": 128 },
+        "reason": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["open", "reviewed", "resolved"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reporterUid", "targetUid", "reason", "status", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "Private user account records, roles, and security preferences."
+    },
+    "/employeeDirectory/{userId}": {
+      "schema": { "$ref": "#/entities/EmployeeDirectoryEntry" },
+      "description": "Internal employee directory isolated from customers."
+    },
+    "/customerDirectory/{userId}": {
+      "schema": { "$ref": "#/entities/CustomerDirectoryEntry" },
+      "description": "Public customer community display profiles."
+    },
+    "/departments/{departmentId}": {
+      "schema": { "$ref": "#/entities/Department" },
+      "description": "Company departments."
+    },
+    "/roles/{roleId}": {
+      "schema": { "$ref": "#/entities/RoleDefinition" },
+      "description": "Configurable RBAC roles and permissions."
+    },
+    "/employeeInvites/{inviteId}": {
+      "schema": { "$ref": "#/entities/EmployeeInvite" },
+      "description": "Pre-approved employee invitations."
+    },
+    "/conversations/{conversationId}": {
+      "schema": { "$ref": "#/entities/Conversation" },
+      "description": "Messaging rooms and direct conversations."
+    },
+    "/conversations/{conversationId}/members/{memberUid}": {
+      "schema": { "$ref": "#/entities/ConversationMember" },
+      "description": "Conversation members subcollection."
+    },
+    "/conversations/{conversationId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Real-time messages inside a conversation."
+    },
+    "/meetings/{meetingId}": {
+      "schema": { "$ref": "#/entities/Meeting" },
+      "description": "Online meetings, schedules, and agendas."
+    },
+    "/meetings/{meetingId}/participants/{participantUid}": {
+      "schema": { "$ref": "#/entities/MeetingParticipant" },
+      "description": "Meeting waiting room, host controls, and attendance."
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Customer portal product and service catalog."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/CustomerOrder" },
+      "description": "Customer orders and invoices."
+    },
+    "/financialTransactions/{txId}": {
+      "schema": { "$ref": "#/entities/FinancialTransaction" },
+      "description": "Financial transaction ledger for orders, refunds, and adjustments."
+    },
+    "/customerFeedback/{feedbackId}": {
+      "schema": { "$ref": "#/entities/CustomerFeedback" },
+      "description": "Customer inquiries, complaints, and feedback."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/NotificationItem" },
+      "description": "User-specific notifications."
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Security and administrative audit logs."
+    },
+    "/syncRecords/{syncId}": {
+      "schema": { "$ref": "#/entities/SyncRecord" },
+      "description": "Synchronization center logs."
+    },
+    "/userBookmarks/{bookmarkId}": {
+      "schema": { "$ref": "#/entities/UserBookmark" },
+      "description": "User message bookmarks."
+    },
+    "/blockedUsers/{blockId}": {
+      "schema": { "$ref": "#/entities/BlockedUser" },
+      "description": "Blocked user records."
+    },
+    "/moderationReports/{reportId}": {
+      "schema": { "$ref": "#/entities/ModerationReport" },
+      "description": "Moderation and spam reports."
+    }
+  }
+}

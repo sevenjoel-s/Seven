@@ -1,0 +1,6 @@
+{
+  "name": "7Sunday Meet — Seven Sunday Connect",
+  "description": "Enterprise communication, video conferencing, scheduling, customer engagement, and administration platform for Seven Sunday Ethiopia.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
