@@ -48,7 +48,7 @@ describe('Database Tests — Blueprint, Domain Types & Firestore Rules Alignment
     });
   });
 
-  it('includes firestore paths for all core enterprise collections', () => {
+  it('includes firestore paths for all core enterprise and customer e-commerce collections', () => {
     const expectedPaths = [
       '/users/{userId}',
       '/employeeDirectory/{userId}',
@@ -56,14 +56,56 @@ describe('Database Tests — Blueprint, Domain Types & Firestore Rules Alignment
       '/departments/{departmentId}',
       '/conversations/{conversationId}',
       '/meetings/{meetingId}',
+      '/productCategories/{categoryId}',
       '/products/{productId}',
+      '/shoppingCarts/{customerUid}',
+      '/deliveryAddresses/{addressId}',
       '/orders/{orderId}',
+      '/calls/{callId}',
       '/financialTransactions/{txId}',
+      '/notifications/{notificationId}',
       '/auditLogs/{logId}',
       '/syncRecords/{syncId}',
     ];
     expectedPaths.forEach((p) => {
       expect(blueprint.firestore[p]).toBeDefined();
     });
+  });
+
+  it('synchronizes ProductCategory, enhanced Product, ShoppingCart, DeliveryAddress, 7-status Order, CallRecord, and call Notification schemas', () => {
+    const entityValidators: Array<[string, string, string]> = [
+      ['ProductCategory', 'isValidProductCategory', 'export interface ProductCategory'],
+      ['Product', 'isValidProduct', 'export interface Product'],
+      ['ShoppingCart', 'isValidShoppingCart', 'export interface ShoppingCart'],
+      ['DeliveryAddress', 'isValidDeliveryAddress', 'export interface DeliveryAddress'],
+      ['CustomerOrder', 'isValidOrder', 'export interface CustomerOrder'],
+      ['CallRecord', 'isValidCall', 'export interface CallRecord'],
+      ['NotificationItem', 'isValidNotification', 'export interface NotificationItem'],
+    ];
+
+    entityValidators.forEach(([entityName, validatorFn, typeDecl]) => {
+      const bpFields = Object.keys(blueprint.entities[entityName].properties);
+      const ruleFields = extractValidatorFields(validatorFn);
+      expect(ruleFields.length).toBeGreaterThan(0);
+      bpFields.forEach((field) => {
+        expect(ruleFields).toContain(field);
+      });
+      expect(domainTypes).toContain(typeDecl);
+    });
+
+    // Verify all 7 order statuses and 'call' notification type
+    expect(blueprint.entities.CustomerOrder.properties.status.enum).toEqual([
+      'pending',
+      'confirmed',
+      'processing',
+      'ready_for_delivery',
+      'shipped',
+      'delivered',
+      'cancelled',
+    ]);
+    expect(rules).toContain("'ready_for_delivery'");
+    expect(domainTypes).toContain("'ready_for_delivery'");
+    expect(blueprint.entities.NotificationItem.properties.type.enum).toContain('call');
+    expect(rules).toContain("'call'");
   });
 });

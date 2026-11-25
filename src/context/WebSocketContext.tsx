@@ -5,6 +5,8 @@ export interface OnlinePeer {
   uid: string;
   displayName: string;
   availability: string;
+  role?: string;
+  accountType?: string;
 }
 
 type WSListener = (payload: Record<string, unknown>) => void;
@@ -73,6 +75,8 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             token,
             displayName: profile.fullName,
             availability: profile.availability || 'available',
+            role: profile.role,
+            accountType: profile.accountType,
           })
         );
       };

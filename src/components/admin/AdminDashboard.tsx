@@ -6,21 +6,34 @@ import {
   Check,
   Database,
   Download,
+  Edit3,
   Eye,
+  FolderPlus,
+  ImagePlus,
+  LogOut,
+  MessageSquare,
   Package,
+  Phone,
+  PhoneCall,
   Plus,
   Shield,
   ShoppingCart,
   Trash2,
+  UserCheck,
   UserPlus,
   Users,
+  Video,
+  X,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useDirectCall } from '../../context/DirectCallContext';
 import {
   downloadFinancialLedgerPDF,
   downloadFinancialReceiptPDF,
   downloadOrderInvoicePDF,
+  exportDatabaseBackupJSON,
   exportDataToExcel,
+  ORDER_STATUS_LABELS,
 } from '../../lib/exportUtils';
 import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
 import {
@@ -31,6 +44,8 @@ import {
   processOrderStatusWithAudit,
   recordManualTransaction,
   removeOptionalDemoData,
+  syncSupportRoutingDirectory,
+  uploadFileToServer,
 } from '../../lib/firestoreActions';
 import { hasPermission, ROLE_LABELS, ROLE_MATRIX } from '../../lib/rbac';
 import {
@@ -43,10 +58,14 @@ import {
   FinancialTransaction,
   ModerationReport,
   Product,
+  ProductAvailabilityStatus,
+  ProductCategory,
+  ProductSpecification,
   RoleDefinition,
   RoleKey,
   UserAccount,
 } from '../../types/domain';
+import { DirectCallPanel } from '../calls/DirectCallPanel';
 import { DocumentPreviewModal } from '../shared/DocumentPreviewModal';
 import { SearchFilterSortBar } from '../shared/SearchFilterSortBar';
 
@@ -58,6 +77,7 @@ interface AdminDashboardProps {
   feedback: CustomerFeedback[];
   transactions?: FinancialTransaction[];
   showDemoData?: boolean;
+  onOpenCustomerChat?: (customer: UserAccount) => void;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
@@ -68,14 +88,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   feedback,
   transactions = [],
   showDemoData = false,
+  onOpenCustomerChat,
 }) => {
-  const { profile, getToken } = useAuth();
-  const [tab, setTab] = useState<'users' | 'departments' | 'roles' | 'catalog' | 'orders' | 'finance' | 'security'>('users');
+  const { profile, getToken, updateAvailability, logout } = useAuth();
+  const { phase: callPhase, startCall } = useDirectCall();
+  const [tab, setTab] = useState<
+    'users' | 'customers' | 'departments' | 'roles' | 'catalog' | 'orders' | 'calls' | 'finance' | 'security'
+  >('users');
 
   const [invites, setInvites] = useState<EmployeeInvite[]>([]);
   const [customRoles, setCustomRoles] = useState<RoleDefinition[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [modReports, setModReports] = useState<ModerationReport[]>([]);
+  const [productCategories, setProductCategories] = useState<ProductCategory[]>([]);
   const [integrationStatus, setIntegrationStatus] = useState<Record<string, boolean | string>>({});
 
   // Invite form
@@ -93,13 +118,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [roleName, setRoleName] = useState('');
   const [rolePerms, setRolePerms] = useState('messaging:view,messaging:create,meetings:view');
 
-  // Product form
+  // Category form
+  const [catName, setCatName] = useState('');
+  const [catDesc, setCatDesc] = useState('');
+  const [catImageUrl, setCatImageUrl] = useState('');
+  const [catUploading, setCatUploading] = useState(false);
+
+  // Product form (shared create + edit modal)
   const [prodName, setProdName] = useState('');
   const [prodSku, setProdSku] = useState('');
   const [prodCategory, setProdCategory] = useState('Hardware');
+  const [prodUnit, setProdUnit] = useState('Piece');
   const [prodPrice, setProdPrice] = useState('4500');
   const [prodStock, setProdStock] = useState('25');
+  const [prodAvail, setProdAvail] = useState<ProductAvailabilityStatus>('in_stock');
+  const [prodImageUrl, setProdImageUrl] = useState('');
+  const [prodGallery, setProdGallery] = useState<string[]>([]);
+  const [prodSpecs, setProdSpecs] = useState<ProductSpecification[]>([]);
+  const [specKey, setSpecKey] = useState('');
+  const [specVal, setSpecVal] = useState('');
   const [prodDesc, setProdDesc] = useState('');
+  const [prodUploading, setProdUploading] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+
+  // Customer management search & drilldown
+  const [custSearch, setCustSearch] = useState('');
+  const [selectedCustomer, setSelectedCustomer] = useState<UserAccount | null>(null);
 
   // Manual Financial Transaction form
   const [txCustomerUid, setTxCustomerUid] = useState('');
@@ -166,6 +210,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const unsubMod = onSnapshot(collection(db, 'moderationReports'), (snap) =>
       setModReports(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<ModerationReport, 'id'>) })))
     );
+    const unsubCats = onSnapshot(collection(db, 'productCategories'), (snap) =>
+      setProductCategories(
+        snap.docs
+          .map((d) => ({ id: d.id, ...(d.data() as Omit<ProductCategory, 'id'>) }))
+          .sort((a, b) => (a.sortOrder ?? 99) - (b.sortOrder ?? 99) || a.name.localeCompare(b.name))
+      )
+    );
 
     getToken().then((token) => {
       if (!token) return;
@@ -180,6 +231,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       unsubRoles();
       unsubAudit();
       unsubMod();
+      unsubCats();
     };
   }, []);
 
@@ -350,21 +402,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       );
     }
 
-    if (nextStatus === 'active' && ['support_agent', 'company_admin', 'super_admin'].includes(nextRole)) {
-      const supportUids = users
-        .filter((u) => u.status === 'active' && ['support_agent', 'company_admin', 'super_admin'].includes(u.role))
-        .map((u) => u.uid);
-      if (!supportUids.includes(target.uid)) supportUids.push(target.uid);
-      await setDoc(doc(db, 'publicConfig', 'supportRouting'), {
-        agentUids: supportUids.slice(0, 50),
-        updatedAt: now,
-      }).catch(() => {});
+    if (nextStatus === 'active' && ['support_agent', 'company_admin', 'super_admin', 'department_manager'].includes(nextRole)) {
+      const updatedList = users.map((u) => (u.uid === target.uid ? { ...u, role: nextRole, status: nextStatus } : u));
+      await syncSupportRoutingDirectory(updatedList).catch(() => {});
     }
 
     await logAuditEvent(profile, auditAction, 'user', target.uid, `Updated ${target.email}: ${JSON.stringify(patch)}`, 'warning');
     await createNotification(target.uid, 'security', 'Account Updated', `An administrator updated your account (${auditAction}).`);
     setNotice(`Updated ${target.fullName}.`);
   };
+
+  const customerAccounts = useMemo(() => {
+    const term = custSearch.trim().toLowerCase();
+    return users
+      .filter((u) => u.accountType === 'customer')
+      .filter((u) => {
+        if (!term) return true;
+        return (
+          u.fullName.toLowerCase().includes(term) ||
+          u.email.toLowerCase().includes(term) ||
+          (u.phone || '').toLowerCase().includes(term)
+        );
+      })
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }, [users, custSearch]);
 
   const handleCreateInvite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -432,12 +493,118 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     await logAuditEvent(profile, 'DEPARTMENT_DELETED', 'department', d.id, `Removed ${d.name} (${d.code})`, 'warning');
   };
 
-  const handleCreateProduct = async (e: React.FormEvent) => {
+  const handleCreateCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!profile || !catName.trim()) return;
+    setErrorMsg(null);
+    if (!hasPermission(profile, 'products', 'create') && !hasPermission(profile, 'admin', 'manage')) {
+      setErrorMsg('Permission denied: cannot manage product categories.');
+      return;
+    }
+    const now = new Date().toISOString();
+    const slug = catName
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '') || `cat-${Date.now()}`;
+    await addDoc(collection(db, 'productCategories'), {
+      name: catName.trim().slice(0, 100),
+      slug: slug.slice(0, 100),
+      ...(catDesc.trim() ? { description: catDesc.trim().slice(0, 600) } : {}),
+      ...(catImageUrl.trim() ? { imageUrl: catImageUrl.trim().slice(0, 500) } : {}),
+      sortOrder: productCategories.length + 1,
+      active: true,
+      createdBy: profile.uid,
+      isDemo: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await logAuditEvent(profile, 'PRODUCT_CATEGORY_CREATED', 'productCategory', slug, catName.trim());
+    setCatName('');
+    setCatDesc('');
+    setCatImageUrl('');
+    setNotice('Product category created.');
+  };
+
+  const handleUploadCategoryImage = async (file: File) => {
+    setCatUploading(true);
+    setErrorMsg(null);
+    try {
+      const token = await getToken();
+      if (!token) throw new Error('Authentication token unavailable.');
+      const res = await uploadFileToServer(file, token);
+      setCatImageUrl(res.url);
+    } catch (err) {
+      showError(err);
+    } finally {
+      setCatUploading(false);
+    }
+  };
+
+  const handleUploadProductImages = async (files: FileList | null, target: 'main' | 'gallery') => {
+    if (!files || files.length === 0) return;
+    setProdUploading(true);
+    setErrorMsg(null);
+    try {
+      const token = await getToken();
+      if (!token) throw new Error('Authentication token unavailable.');
+      for (const file of Array.from(files).slice(0, 8)) {
+        const res = await uploadFileToServer(file, token);
+        if (target === 'main') {
+          setProdImageUrl(res.url);
+          break;
+        } else {
+          setProdGallery((prev) => Array.from(new Set([...prev, res.url])).slice(0, 12));
+        }
+      }
+    } catch (err) {
+      showError(err);
+    } finally {
+      setProdUploading(false);
+    }
+  };
+
+  const resetProductForm = () => {
+    setEditingProduct(null);
+    setProdName('');
+    setProdSku('');
+    setProdCategory(productCategories[0]?.name || 'Hardware');
+    setProdUnit('Piece');
+    setProdPrice('4500');
+    setProdStock('25');
+    setProdAvail('in_stock');
+    setProdImageUrl('');
+    setProdGallery([]);
+    setProdSpecs([]);
+    setSpecKey('');
+    setSpecVal('');
+    setProdDesc('');
+  };
+
+  const startEditProduct = (p: Product) => {
+    setEditingProduct(p);
+    setProdName(p.name);
+    setProdSku(p.sku);
+    setProdCategory(p.category);
+    setProdUnit(p.unit || 'Piece');
+    setProdPrice(String(p.price));
+    setProdStock(String(p.stock));
+    setProdAvail(
+      p.availabilityStatus || (p.stock <= 0 ? 'out_of_stock' : p.stock <= 5 ? 'low_stock' : 'in_stock')
+    );
+    setProdImageUrl(p.imageUrl || '');
+    setProdGallery(p.galleryImages || []);
+    setProdSpecs(p.specifications || []);
+    setProdDesc(p.description || '');
+  };
+
+  const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!profile) return;
     setErrorMsg(null);
-    if (!hasPermission(profile, 'products', 'create') && !hasPermission(profile, 'admin', 'manage')) {
-      setErrorMsg('Permission denied: cannot create catalog products.');
+    const permAction = editingProduct ? 'edit' : 'create';
+    if (!hasPermission(profile, 'products', permAction) && !hasPermission(profile, 'admin', 'manage')) {
+      setErrorMsg(`Permission denied: cannot ${permAction} catalog products.`);
       return;
     }
     if (!prodName.trim() || !prodSku.trim()) return;
@@ -447,27 +614,39 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setErrorMsg('Product price and stock must be valid non-negative numbers.');
       return;
     }
+    const matchedCat = productCategories.find((c) => c.name.toLowerCase() === prodCategory.trim().toLowerCase());
     const now = new Date().toISOString();
-    await addDoc(collection(db, 'products'), {
-      name: prodName.trim(),
-      sku: prodSku.trim().toUpperCase(),
-      category: prodCategory.trim() || 'General',
-      description: prodDesc.trim(),
+    const payload = {
+      name: prodName.trim().slice(0, 160),
+      sku: prodSku.trim().toUpperCase().slice(0, 64),
+      category: prodCategory.trim().slice(0, 80) || 'General',
+      ...(matchedCat ? { categoryId: matchedCat.id } : {}),
+      description: prodDesc.trim().slice(0, 2000),
+      unit: prodUnit.trim().slice(0, 40) || 'Piece',
+      specifications: prodSpecs.slice(0, 40),
       price: parsedPrice,
       currency: 'ETB',
       stock: parsedStock,
-      imageUrl: '/src/assets/images/enterprise_room_kit_1795502288635.jpg',
-      active: true,
-      createdBy: profile.uid,
-      isDemo: false,
-      createdAt: now,
+      availabilityStatus: prodAvail,
+      imageUrl: (prodImageUrl.trim() || '/assets/aistudio/seven_sunday_app_icon_crcle-removebg-preview_d14ccd7b.png').slice(0, 500),
+      galleryImages: prodGallery.slice(0, 12),
+      active: editingProduct ? editingProduct.active : true,
+      createdBy: editingProduct ? editingProduct.createdBy : profile.uid,
+      isDemo: editingProduct ? Boolean(editingProduct.isDemo) : false,
+      createdAt: editingProduct ? editingProduct.createdAt : now,
       updatedAt: now,
-    });
-    await logAuditEvent(profile, 'PRODUCT_CREATED', 'product', prodSku.trim(), prodName.trim());
-    setProdName('');
-    setProdSku('');
-    setProdDesc('');
-    setNotice('Product published to Customer Portal.');
+    };
+
+    if (editingProduct) {
+      await setDoc(doc(db, 'products', editingProduct.id), payload, { merge: true });
+      await logAuditEvent(profile, 'PRODUCT_UPDATED', 'product', editingProduct.id, `Updated ${payload.name} (${payload.sku})`);
+      setNotice(`Updated ${payload.name}.`);
+    } else {
+      await addDoc(collection(db, 'products'), payload);
+      await logAuditEvent(profile, 'PRODUCT_CREATED', 'product', payload.sku, payload.name);
+      setNotice('Product published to 7Sunday Ethiopia catalog.');
+    }
+    resetProductForm();
   };
 
   const handleRecordManualTransaction = async (e: React.FormEvent) => {
@@ -575,16 +754,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       )}
 
       {/* Admin Navigation Tabs */}
-      <div className="flex flex-wrap items-center gap-1.5 p-1.5 rounded-xl bg-[#F3F5F8] dark:bg-slate-800 w-full sm:w-fit">
+      <div className="flex flex-wrap items-center gap-1.5 p-1.5 rounded-xl bg-[#F3F5F8] dark:bg-slate-800 w-full">
         {(
           [
             { id: 'users', label: 'Users & Invites', Icon: Users },
+            { id: 'customers', label: 'Customers', Icon: UserCheck },
+            { id: 'catalog', label: 'Catalog & Categories', Icon: Package },
+            { id: 'orders', label: 'Orders & Support', Icon: ShoppingCart },
+            { id: 'calls', label: 'Call Desk', Icon: PhoneCall },
+            { id: 'finance', label: 'Financial Ledger', Icon: Banknote },
             { id: 'departments', label: 'Departments', Icon: Building2 },
             { id: 'roles', label: 'RBAC Roles', Icon: Shield },
-            { id: 'catalog', label: 'Product Catalog', Icon: Package },
-            { id: 'orders', label: 'Orders & Support', Icon: ShoppingCart },
-            { id: 'finance', label: 'Financial Ledger', Icon: Banknote },
-            { id: 'security', label: 'Audit & Demo Data', Icon: Database },
+            { id: 'security', label: 'Audit, Backup & Demo', Icon: Database },
           ] as const
         ).map(({ id, label, Icon }) => (
           <button
@@ -601,6 +782,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <span>{label}</span>
           </button>
         ))}
+        <button
+          type="button"
+          onClick={logout}
+          className="ml-auto min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-950/50 text-xs font-medium text-red-700 dark:text-red-300 transition-colors whitespace-nowrap shrink-0"
+        >
+          <LogOut className="w-3.5 h-3.5" />
+          <span>Log Out</span>
+        </button>
       </div>
 
       {/* 1. USERS & INVITES */}
@@ -809,6 +998,108 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
+      {/* 1b. CUSTOMER MANAGEMENT */}
+      {tab === 'customers' && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-[#15243A] dark:text-slate-100">
+                Registered Customers ({customerAccounts.length})
+              </h3>
+              <p className="text-xs text-slate-500">
+                Inspect customer profiles, view order history, or initiate a direct message, voice call, or video call.
+              </p>
+            </div>
+            <input
+              type="text"
+              value={custSearch}
+              onChange={(e) => setCustSearch(e.target.value)}
+              placeholder="Search customers by name, email, phone..."
+              className="min-h-[40px] w-full sm:w-72 rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs"
+            />
+          </div>
+
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="border-b border-slate-200 dark:border-slate-800 bg-[#EAF4FF] dark:bg-slate-950 text-[#082B59] dark:text-slate-300">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">Customer</th>
+                  <th className="px-4 py-3 font-semibold">Phone</th>
+                  <th className="px-4 py-3 font-semibold">Status</th>
+                  <th className="px-4 py-3 font-semibold">Orders / Spend</th>
+                  <th className="px-4 py-3 font-semibold text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {customerAccounts.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-8 text-center text-slate-500">No registered customers match your search.</td>
+                  </tr>
+                ) : (
+                  customerAccounts.map((cust) => {
+                    const custOrders = orders.filter((o) => o.customerUid === cust.uid && (showDemoData || !o.isDemo));
+                    const spend = custOrders.filter((o) => o.status !== 'cancelled').reduce((s, o) => s + o.total, 0);
+                    return (
+                      <tr key={cust.uid} className="hover:bg-[#F5F8FC] dark:hover:bg-slate-800/40">
+                        <td className="px-4 py-3">
+                          <div className="font-semibold text-[#15243A] dark:text-slate-100">{cust.fullName}</div>
+                          <div className="text-slate-500">{cust.email}</div>
+                        </td>
+                        <td className="px-4 py-3 tabular-nums">{cust.phone || '—'}</td>
+                        <td className="px-4 py-3 capitalize">{cust.status.replace('_', ' ')}</td>
+                        <td className="px-4 py-3 tabular-nums">
+                          <span className="font-semibold">{custOrders.length}</span> orders · ETB {spend.toFixed(2)}
+                        </td>
+                        <td className="px-4 py-3 text-right space-x-1.5 whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedCustomer(cust)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF]"
+                          >
+                            <Eye className="w-3.5 h-3.5 text-[#1178B9]" /> Orders
+                          </button>
+                          {onOpenCustomerChat && (
+                            <button
+                              type="button"
+                              onClick={() => onOpenCustomerChat(cust)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF]"
+                            >
+                              <MessageSquare className="w-3.5 h-3.5 text-[#1178B9]" /> Chat
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            disabled={callPhase !== 'idle'}
+                            onClick={() => {
+                              setTab('calls');
+                              startCall({ targetUid: cust.uid, targetName: cust.fullName, callType: 'audio' });
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] disabled:opacity-40"
+                          >
+                            <Phone className="w-3.5 h-3.5 text-[#1178B9]" /> Audio
+                          </button>
+                          <button
+                            type="button"
+                            disabled={callPhase !== 'idle'}
+                            onClick={() => {
+                              setTab('calls');
+                              startCall({ targetUid: cust.uid, targetName: cust.fullName, callType: 'video' });
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded bg-[#1178B9] hover:bg-[#0D6096] disabled:opacity-40 text-white"
+                          >
+                            <Video className="w-3.5 h-3.5" /> Video
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* 2. DEPARTMENTS */}
       {tab === 'departments' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -915,103 +1206,322 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* 4. PRODUCT CATALOG */}
+      {/* 4. PRODUCT CATALOG & CATEGORIES */}
       {tab === 'catalog' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <form onSubmit={handleCreateProduct} className="lg:col-span-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3 h-fit">
-            <h3 className="text-sm font-semibold flex items-center gap-2 text-[#15243A] dark:text-slate-100"><Plus className="w-4 h-4 text-[#1178B9]" /> Add Customer Product / Service</h3>
-            <input type="text" required value={prodName} onChange={(e) => setProdName(e.target.value)} placeholder="Product Name" className="w-full min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
-            <div className="grid grid-cols-2 gap-2">
-              <input type="text" required value={prodSku} onChange={(e) => setProdSku(e.target.value)} placeholder="SKU" className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs uppercase" />
-              <input type="text" required value={prodCategory} onChange={(e) => setProdCategory(e.target.value)} placeholder="Category" className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <input type="number" min={0} step="0.01" required value={prodPrice} onChange={(e) => setProdPrice(e.target.value)} placeholder="Price (ETB)" className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
-              <input type="number" min={0} required value={prodStock} onChange={(e) => setProdStock(e.target.value)} placeholder="Stock" className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
-            </div>
-            <textarea rows={3} value={prodDesc} onChange={(e) => setProdDesc(e.target.value)} placeholder="Product description..." className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
-            <button type="submit" className="w-full min-h-[40px] rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white py-2 text-xs font-medium">Publish Product</button>
-          </form>
-
-          <div className="lg:col-span-8 space-y-4">
-            <SearchFilterSortBar
-              search={prodSearch}
-              onSearchChange={setProdSearch}
-              searchPlaceholder="Search products by name, SKU, category..."
-              filters={[
-                {
-                  label: 'Catalog status filter',
-                  value: prodActiveFilter,
-                  onChange: setProdActiveFilter,
-                  options: [
-                    { label: 'All Items', value: 'all' },
-                    { label: 'Active Only', value: 'active' },
-                    { label: 'Hidden Only', value: 'hidden' },
-                    { label: 'Demo Items', value: 'demo' },
-                  ],
-                },
-              ]}
-              sortOptions={[
-                { label: 'Name', value: 'name' },
-                { label: 'Price', value: 'price' },
-                { label: 'Stock', value: 'stock' },
-              ]}
-              sortBy={prodSortBy}
-              onSortByChange={(v) => setProdSortBy(v as typeof prodSortBy)}
-              sortDir={prodSortDir}
-              onToggleSortDir={() => setProdSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
-              resultCount={filteredProducts.length}
-            />
-
-            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800">
-              {filteredProducts.length === 0 ? (
-                <p className="p-8 text-center text-xs text-slate-500">No products match your filter criteria.</p>
-              ) : (
-                filteredProducts.map((p) => (
-                  <div key={p.id} className="p-4 flex items-center justify-between gap-4 text-xs">
-                    <div>
-                      <p className="text-sm font-semibold flex items-center gap-2">
-                        <span>{p.name}</span>
-                        <span className="font-mono text-slate-400">({p.sku})</span>
-                        {p.isDemo && (
-                          <span className="px-1.5 py-0.5 rounded bg-[#EAF4FF] text-[#082B59] text-[10px] font-semibold">DEMO</span>
-                        )}
-                      </p>
-                      <p className="text-slate-500 tabular-nums">{p.category} · {p.currency} {p.price.toFixed(2)} · Stock: {p.stock}</p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          if (!profile || (!hasPermission(profile, 'products', 'edit') && !hasPermission(profile, 'admin', 'manage'))) {
-                            setErrorMsg('Permission denied: cannot modify catalog status.');
-                            return;
-                          }
-                          await updateDoc(doc(db, 'products', p.id), { active: !p.active, updatedAt: new Date().toISOString() });
-                          await logAuditEvent(profile, 'PRODUCT_VISIBILITY_TOGGLED', 'product', p.id, `${p.sku} active=${!p.active}`);
-                        }}
-                        className="px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF]"
-                      >
-                        {p.active ? 'Hide' : 'Activate'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          if (!profile || (!hasPermission(profile, 'products', 'delete') && !hasPermission(profile, 'admin', 'manage'))) {
-                            setErrorMsg('Permission denied: cannot delete catalog items.');
-                            return;
-                          }
-                          await deleteDoc(doc(db, 'products', p.id));
-                          await logAuditEvent(profile, 'PRODUCT_DELETED', 'product', p.id, `Deleted ${p.name} (${p.sku})`, 'warning');
-                        }}
-                        className="text-red-600 p-1"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
+        <div className="space-y-6">
+          {/* Categories Management */}
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
+            <h3 className="text-sm font-semibold flex items-center gap-2 text-[#15243A] dark:text-slate-100">
+              <FolderPlus className="w-4 h-4 text-[#1178B9]" /> Product Categories ({productCategories.length})
+            </h3>
+            <form onSubmit={handleCreateCategory} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+              <input
+                type="text"
+                required
+                value={catName}
+                onChange={(e) => setCatName(e.target.value)}
+                placeholder="Category Name (e.g. Packaging)"
+                className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs"
+              />
+              <input
+                type="text"
+                value={catDesc}
+                onChange={(e) => setCatDesc(e.target.value)}
+                placeholder="Short description"
+                className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs"
+              />
+              <input
+                type="text"
+                value={catImageUrl}
+                onChange={(e) => setCatImageUrl(e.target.value)}
+                placeholder="Category Image URL (or upload)"
+                className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs"
+              />
+              <label className="min-h-[40px] inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs font-medium cursor-pointer hover:bg-[#EAF4FF]">
+                <ImagePlus className="w-3.5 h-3.5 text-[#1178B9]" />
+                {catUploading ? 'Uploading...' : 'Upload Image'}
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => e.target.files?.[0] && handleUploadCategoryImage(e.target.files[0])}
+                />
+              </label>
+              <button type="submit" className="min-h-[40px] rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white px-4 py-2 text-xs font-semibold">
+                Add Category
+              </button>
+            </form>
+            {productCategories.length > 0 && (
+              <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                {productCategories.map((c) => (
+                  <div
+                    key={c.id}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 text-xs"
+                  >
+                    <span className="font-semibold">{c.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => updateDoc(doc(db, 'productCategories', c.id), { active: !c.active, updatedAt: new Date().toISOString() })}
+                      className="text-[11px] text-[#1178B9] hover:underline"
+                    >
+                      {c.active ? 'Active' : 'Hidden'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteDoc(doc(db, 'productCategories', c.id))}
+                      aria-label={`Delete category ${c.name}`}
+                      className="text-red-600"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
                   </div>
-                ))
-              )}
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <form onSubmit={handleSaveProduct} className="lg:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3 h-fit">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold flex items-center gap-2 text-[#15243A] dark:text-slate-100">
+                  {editingProduct ? <Edit3 className="w-4 h-4 text-[#1178B9]" /> : <Plus className="w-4 h-4 text-[#1178B9]" />}
+                  {editingProduct ? `Edit Product — ${editingProduct.sku}` : 'Add Customer Product / Service'}
+                </h3>
+                {editingProduct && (
+                  <button type="button" onClick={resetProductForm} className="text-xs text-slate-500 hover:underline">
+                    Cancel Edit
+                  </button>
+                )}
+              </div>
+
+              <input type="text" required value={prodName} onChange={(e) => setProdName(e.target.value)} placeholder="Product Name *" className="w-full min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
+
+              <div className="grid grid-cols-2 gap-2">
+                <input type="text" required value={prodSku} onChange={(e) => setProdSku(e.target.value)} placeholder="Product Code / SKU *" className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs uppercase" />
+                <div>
+                  <input
+                    list="admin-product-categories"
+                    required
+                    value={prodCategory}
+                    onChange={(e) => setProdCategory(e.target.value)}
+                    placeholder="Category *"
+                    className="w-full min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs"
+                  />
+                  <datalist id="admin-product-categories">
+                    {productCategories.map((c) => <option key={c.id} value={c.name} />)}
+                  </datalist>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <input type="number" min={0} step="0.01" required value={prodPrice} onChange={(e) => setProdPrice(e.target.value)} placeholder="Price (ETB) *" className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
+                <input type="number" min={0} required value={prodStock} onChange={(e) => setProdStock(e.target.value)} placeholder="Stock *" className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
+                <input type="text" required value={prodUnit} onChange={(e) => setProdUnit(e.target.value)} placeholder="Unit (Piece, Box...)" className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-slate-500 mb-1">Availability Status</label>
+                <select
+                  value={prodAvail}
+                  onChange={(e) => setProdAvail(e.target.value as ProductAvailabilityStatus)}
+                  className="w-full min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs"
+                >
+                  <option value="in_stock">In Stock</option>
+                  <option value="low_stock">Low Stock</option>
+                  <option value="out_of_stock">Out of Stock</option>
+                  <option value="preorder">Pre-Order</option>
+                </select>
+              </div>
+
+              {/* Main Image & Additional Gallery */}
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={prodImageUrl}
+                    onChange={(e) => setProdImageUrl(e.target.value)}
+                    placeholder="Main product image URL (or upload)"
+                    className="flex-1 min-h-[38px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-1.5 text-xs"
+                  />
+                  <label className="min-h-[38px] inline-flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-xs font-medium cursor-pointer hover:bg-[#EAF4FF]">
+                    <ImagePlus className="w-3.5 h-3.5 text-[#1178B9]" /> Main
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => handleUploadProductImages(e.target.files, 'main')}
+                    />
+                  </label>
+                </div>
+
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500">Additional Gallery Images ({prodGallery.length}/12)</span>
+                  <label className="inline-flex items-center gap-1 text-[#1178B9] font-medium cursor-pointer hover:underline">
+                    <ImagePlus className="w-3.5 h-3.5" /> {prodUploading ? 'Uploading...' : 'Add Gallery Photos'}
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => handleUploadProductImages(e.target.files, 'gallery')}
+                    />
+                  </label>
+                </div>
+
+                {prodGallery.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {prodGallery.map((gUrl, idx) => (
+                      <div key={`${gUrl}_${idx}`} className="relative w-12 h-12 rounded border border-slate-200 overflow-hidden">
+                        <img src={gUrl} alt="Gallery" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                        <button
+                          type="button"
+                          onClick={() => setProdGallery((prev) => prev.filter((_, i) => i !== idx))}
+                          className="absolute top-0 right-0 bg-red-600 text-white p-0.5"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Technical Specifications */}
+              <div className="space-y-2 pt-1">
+                <label className="block text-[11px] font-medium text-slate-500">Product Specifications</label>
+                <div className="flex gap-1.5">
+                  <input type="text" value={specKey} onChange={(e) => setSpecKey(e.target.value)} placeholder="Spec Name (e.g. Material)" className="flex-1 min-h-[36px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-2.5 py-1 text-xs" />
+                  <input type="text" value={specVal} onChange={(e) => setSpecVal(e.target.value)} placeholder="Value (e.g. Steel)" className="flex-1 min-h-[36px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-2.5 py-1 text-xs" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!specKey.trim() || !specVal.trim()) return;
+                      setProdSpecs((prev) => [...prev, { key: specKey.trim(), value: specVal.trim() }].slice(0, 40));
+                      setSpecKey('');
+                      setSpecVal('');
+                    }}
+                    className="px-2.5 rounded-lg bg-[#082B59] text-white text-xs font-medium"
+                  >
+                    Add
+                  </button>
+                </div>
+                {prodSpecs.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 text-[11px]">
+                    {prodSpecs.map((s, idx) => (
+                      <span key={`${s.key}_${idx}`} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#EAF4FF] dark:bg-[#082B59]/40 text-[#082B59] dark:text-[#EAF4FF]">
+                        <strong>{s.key}:</strong> {s.value}
+                        <button type="button" onClick={() => setProdSpecs((prev) => prev.filter((_, i) => i !== idx))}>
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <textarea rows={3} value={prodDesc} onChange={(e) => setProdDesc(e.target.value)} placeholder="Detailed product description..." className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
+              <button type="submit" className="w-full min-h-[42px] rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white py-2 text-xs font-semibold">
+                {editingProduct ? 'Save Product Changes' : 'Publish Product'}
+              </button>
+            </form>
+
+            <div className="lg:col-span-7 space-y-4">
+              <SearchFilterSortBar
+                search={prodSearch}
+                onSearchChange={setProdSearch}
+                searchPlaceholder="Search products by name, SKU, category..."
+                filters={[
+                  {
+                    label: 'Catalog status filter',
+                    value: prodActiveFilter,
+                    onChange: setProdActiveFilter,
+                    options: [
+                      { label: 'All Items', value: 'all' },
+                      { label: 'Active Only', value: 'active' },
+                      { label: 'Hidden Only', value: 'hidden' },
+                      { label: 'Demo Items', value: 'demo' },
+                    ],
+                  },
+                ]}
+                sortOptions={[
+                  { label: 'Name', value: 'name' },
+                  { label: 'Price', value: 'price' },
+                  { label: 'Stock', value: 'stock' },
+                ]}
+                sortBy={prodSortBy}
+                onSortByChange={(v) => setProdSortBy(v as typeof prodSortBy)}
+                sortDir={prodSortDir}
+                onToggleSortDir={() => setProdSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
+                resultCount={filteredProducts.length}
+              />
+
+              <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800">
+                {filteredProducts.length === 0 ? (
+                  <p className="p-8 text-center text-xs text-slate-500">No products match your filter criteria.</p>
+                ) : (
+                  filteredProducts.map((p) => (
+                    <div key={p.id} className="p-4 flex flex-wrap items-center justify-between gap-4 text-xs">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <img
+                          src={p.imageUrl || '/assets/aistudio/seven_sunday_app_icon_crcle-removebg-preview_d14ccd7b.png'}
+                          alt={p.name}
+                          referrerPolicy="no-referrer"
+                          className="w-12 h-12 rounded-lg object-cover bg-[#F3F5F8] dark:bg-slate-800 shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold flex items-center gap-2 flex-wrap">
+                            <span>{p.name}</span>
+                            <span className="font-mono text-xs text-slate-400">({p.sku})</span>
+                            {p.isDemo && (
+                              <span className="px-1.5 py-0.5 rounded bg-[#EAF4FF] text-[#082B59] text-[10px] font-semibold">DEMO</span>
+                            )}
+                          </p>
+                          <p className="text-slate-500 tabular-nums">
+                            {p.category} · {p.currency} {p.price.toFixed(2)} / {p.unit || 'Unit'} · Stock: {p.stock}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => startEditProduct(p)}
+                          className="px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF]"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!profile || (!hasPermission(profile, 'products', 'edit') && !hasPermission(profile, 'admin', 'manage'))) {
+                              setErrorMsg('Permission denied: cannot modify catalog status.');
+                              return;
+                            }
+                            await updateDoc(doc(db, 'products', p.id), { active: !p.active, updatedAt: new Date().toISOString() });
+                            await logAuditEvent(profile, 'PRODUCT_VISIBILITY_TOGGLED', 'product', p.id, `${p.sku} active=${!p.active}`);
+                          }}
+                          className="px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF]"
+                        >
+                          {p.active ? 'Hide' : 'Activate'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!profile || (!hasPermission(profile, 'products', 'delete') && !hasPermission(profile, 'admin', 'manage'))) {
+                              setErrorMsg('Permission denied: cannot delete catalog items.');
+                              return;
+                            }
+                            await deleteDoc(doc(db, 'products', p.id));
+                            await logAuditEvent(profile, 'PRODUCT_DELETED', 'product', p.id, `Deleted ${p.name} (${p.sku})`, 'warning');
+                          }}
+                          className="text-red-600 p-1"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -1034,6 +1544,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   { label: 'Pending', value: 'pending' },
                   { label: 'Confirmed', value: 'confirmed' },
                   { label: 'Processing', value: 'processing' },
+                  { label: 'Ready for Delivery', value: 'ready_for_delivery' },
                   { label: 'Shipped', value: 'shipped' },
                   { label: 'Delivered', value: 'delivered' },
                   { label: 'Cancelled', value: 'cancelled' },
@@ -1059,10 +1570,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <thead className="border-b border-slate-200 dark:border-slate-800 bg-[#EAF4FF] dark:bg-slate-950 text-[#082B59] dark:text-slate-300">
                 <tr>
                   <th className="px-4 py-2.5 font-semibold">Order / Invoice</th>
-                  <th className="px-4 py-2.5 font-semibold">Customer</th>
+                  <th className="px-4 py-2.5 font-semibold">Customer & Delivery</th>
                   <th className="px-4 py-2.5 font-semibold">Total</th>
                   <th className="px-4 py-2.5 font-semibold">Status Approval</th>
-                  <th className="px-4 py-2.5 font-semibold text-right">Document</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Actions & Document</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -1075,7 +1586,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <span className="inline-block mt-0.5 px-1.5 py-0.5 rounded bg-[#EAF4FF] text-[#082B59] text-[10px] font-semibold">DEMO</span>
                       )}
                     </td>
-                    <td className="px-4 py-3">{o.customerName}</td>
+                    <td className="px-4 py-3">
+                      <div className="font-medium">{o.customerName}</div>
+                      {o.customerPhone && <div className="text-[11px] text-slate-500">Tel: {o.customerPhone}</div>}
+                      {o.shippingAddress && <div className="text-[11px] text-slate-400 truncate max-w-[220px]">{o.shippingAddress}</div>}
+                    </td>
                     <td className="px-4 py-3 tabular-nums font-medium">{o.currency} {o.total.toFixed(2)}</td>
                     <td className="px-4 py-3">
                       <select
@@ -1084,7 +1599,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           if (!profile) return;
                           try {
                             await processOrderStatusWithAudit(profile, o, e.target.value as CustomerOrder['status']);
-                            setNotice(`Order ${o.orderNumber} updated and recorded in audit trail.`);
+                            setNotice(`Order ${o.orderNumber} updated to ${ORDER_STATUS_LABELS[e.target.value as CustomerOrder['status']]}.`);
                           } catch (err) {
                             showError(err);
                           }
@@ -1094,12 +1609,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <option value="pending">Pending</option>
                         <option value="confirmed">Confirmed</option>
                         <option value="processing">Processing</option>
+                        <option value="ready_for_delivery">Ready for Delivery</option>
                         <option value="shipped">Shipped</option>
                         <option value="delivered">Delivered</option>
                         <option value="cancelled">Cancelled (Auto Refund Ledger)</option>
                       </select>
                     </td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-3 text-right space-x-1.5 whitespace-nowrap">
+                      {o.status === 'pending' && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => profile && processOrderStatusWithAudit(profile, o, 'confirmed', 'Order confirmed by staff').catch(showError)}
+                            className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => profile && processOrderStatusWithAudit(profile, o, 'cancelled', 'Rejected by administrator').catch(showError)}
+                            className="px-2.5 py-1 rounded border border-red-200 text-red-600 hover:bg-red-50 font-medium"
+                          >
+                            Reject
+                          </button>
+                        </>
+                      )}
                       <button
                         type="button"
                         onClick={() => setPreviewOrder(o)}
@@ -1151,6 +1685,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             ))}
           </div>
         </div>
+      )}
+
+      {/* 5b. CUSTOMER SERVICE CALL DESK */}
+      {tab === 'calls' && (
+        <DirectCallPanel
+          mode="staff"
+          customers={customerAccounts}
+          onToggleAvailability={async (available) => {
+            await updateAvailability(available ? 'available' : 'away');
+            const updatedUsers = users.map((u) =>
+              u.uid === profile?.uid ? { ...u, availability: available ? ('available' as const) : ('away' as const) } : u
+            );
+            await syncSupportRoutingDirectory(updatedUsers).catch(() => {});
+          }}
+        />
       )}
 
       {/* 6. FINANCIAL TRANSACTION LEDGER */}
@@ -1437,19 +1986,62 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
           </div>
 
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold text-[#15243A] dark:text-slate-100">Database Export & Backup</h3>
+              <p className="text-xs text-slate-500">
+                Download a complete JSON snapshot of users, departments, categories, products, orders, financial transactions, and audit logs.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  await syncSupportRoutingDirectory(users).catch(() => {});
+                  setNotice('Synchronized Customer Service routing directory.');
+                }}
+                className="min-h-[40px] px-3.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] text-xs font-medium"
+              >
+                Sync Call Routing Directory
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  exportDatabaseBackupJSON({
+                    users,
+                    departments,
+                    productCategories,
+                    products,
+                    orders,
+                    feedback,
+                    transactions,
+                    auditLogs,
+                  });
+                  if (profile) {
+                    logAuditEvent(profile, 'DATABASE_BACKUP_EXPORTED', 'system', 'json_backup', `Exported ${orders.length} orders and ${products.length} products`);
+                  }
+                }}
+                className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-[#082B59] hover:bg-[#082B59]/90 text-white text-xs font-semibold"
+              >
+                <Download className="w-3.5 h-3.5" /> Export Database JSON
+              </button>
+            </div>
+          </div>
+
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3">
-            <h3 className="text-sm font-semibold">External Messaging Gateway Configuration</h3>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            <h3 className="text-sm font-semibold">External Messaging & WebRTC Gateway Configuration</h3>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
               {[
                 { label: 'Telegram Bot API', ok: Boolean(integrationStatus.telegramBot) },
                 { label: 'WhatsApp Cloud API', ok: Boolean(integrationStatus.whatsappCloud) },
                 { label: 'Twilio SMS Gateway', ok: Boolean(integrationStatus.twilioSms) },
                 { label: 'Email SMTP Webhook', ok: Boolean(integrationStatus.emailWebhook) },
+                { label: 'TURN NAT Relay', ok: Boolean(integrationStatus.turnConfigured) },
               ].map((g) => (
                 <div key={g.label} className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
                   <p className="font-medium">{g.label}</p>
                   <p className={g.ok ? 'text-[#1178B9] font-medium' : 'text-slate-400'}>
-                    {g.ok ? 'Server Configured' : 'Direct Client Share Fallback'}
+                    {g.ok ? 'Server Configured' : 'STUN / Client Fallback'}
                   </p>
                 </div>
               ))}
@@ -1605,6 +2197,55 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         )}
       </DocumentPreviewModal>
+
+      {/* Customer Orders Drilldown Modal */}
+      {selectedCustomer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#082B59]/65 p-4">
+          <div className="w-full max-w-2xl rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl overflow-hidden max-h-[88vh] flex flex-col">
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-[#15243A] dark:text-slate-100">{selectedCustomer.fullName}</h3>
+                <p className="text-xs text-slate-500">
+                  {selectedCustomer.email} {selectedCustomer.phone ? `· ${selectedCustomer.phone}` : ''}
+                </p>
+              </div>
+              <button type="button" onClick={() => setSelectedCustomer(null)} className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800 text-xs">
+              {orders.filter((o) => o.customerUid === selectedCustomer.uid).length === 0 ? (
+                <p className="py-8 text-center text-slate-500">This customer has not placed any orders yet.</p>
+              ) : (
+                orders
+                  .filter((o) => o.customerUid === selectedCustomer.uid)
+                  .map((o) => (
+                    <div key={o.id} className="py-3 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="font-mono font-bold text-[#082B59] dark:text-[#EAF4FF]">
+                          {o.orderNumber} · {ORDER_STATUS_LABELS[o.status]}
+                        </p>
+                        <p className="text-slate-500 tabular-nums">
+                          {new Date(o.createdAt).toLocaleString()} · {o.items.length} items · {o.currency} {o.total.toFixed(2)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedCustomer(null);
+                          setPreviewOrder(o);
+                        }}
+                        className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] font-medium"
+                      >
+                        View Invoice
+                      </button>
+                    </div>
+                  ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

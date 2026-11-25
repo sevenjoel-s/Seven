@@ -9,6 +9,7 @@ import {
   Menu,
   MessageSquare,
   Phone,
+  PhoneCall,
   Search,
   Settings,
   Shield,
@@ -17,13 +18,15 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useDirectCall } from '../../context/DirectCallContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useWebSocket } from '../../context/WebSocketContext';
 import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
-import { createNotification } from '../../lib/firestoreActions';
+import { createNotification, syncSupportRoutingDirectory } from '../../lib/firestoreActions';
 import { hasPermission, isAdminRole, ROLE_LABELS } from '../../lib/rbac';
 import {
   AvailabilityStatus,
+  CustomerDirectoryEntry,
   CustomerFeedback,
   CustomerOrder,
   Department,
@@ -35,23 +38,26 @@ import {
   UserAccount,
 } from '../../types/domain';
 import { AdminDashboard } from '../admin/AdminDashboard';
+import { DirectCallPanel } from '../calls/DirectCallPanel';
 import { MessagingCenter } from '../chat/MessagingCenter';
 import { MeetingsHub } from '../meetings/MeetingsHub';
 import { ReportsAnalytics } from '../reports/ReportsAnalytics';
 import { PWAInstallButton } from '../shared/PWAComponents';
 import { SyncAndSecurityCenter } from '../shared/SyncAndSecurityCenter';
 
-type WorkspaceTab = 'overview' | 'messages' | 'meetings' | 'directory' | 'reports' | 'admin' | 'settings';
+type WorkspaceTab = 'overview' | 'messages' | 'calls' | 'meetings' | 'directory' | 'reports' | 'admin' | 'settings';
 
 export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = ({ initialJoinCode }) => {
   const { profile, updateAvailability, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { connected: wsConnected, onlineUsers } = useWebSocket();
+  const { phase: directCallPhase, startCall: startDirectCall } = useDirectCall();
 
   const [tab, setTab] = useState<WorkspaceTab>(initialJoinCode ? 'meetings' : 'overview');
   const [mobileMenu, setMobileMenu] = useState(false);
 
   const [employees, setEmployees] = useState<EmployeeDirectoryEntry[]>([]);
+  const [customerDir, setCustomerDir] = useState<CustomerDirectoryEntry[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -144,6 +150,13 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
     }
 
     if (canSupportOrOrders) {
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'customerDirectory'),
+          (snap) => setCustomerDir(snap.docs.map((d) => d.data() as CustomerDirectoryEntry)),
+          () => {}
+        )
+      );
       unsubs.push(
         onSnapshot(
           collection(db, 'orders'),
@@ -267,9 +280,52 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
     setTab('meetings');
   };
 
+  const openCustomerSupportChat = async (cust: UserAccount) => {
+    if (!profile) return;
+    const now = new Date().toISOString();
+    const convRef = await addDoc(collection(db, 'conversations'), {
+      type: 'support',
+      scope: 'support',
+      name: `Support — ${cust.fullName}`,
+      createdBy: profile.uid,
+      memberUids: [profile.uid, cust.uid],
+      adminUids: [profile.uid],
+      lastMessageText: 'Support conversation opened',
+      lastMessageAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await setDoc(doc(db, 'conversations', convRef.id, 'members', profile.uid), {
+      uid: profile.uid,
+      displayName: profile.fullName,
+      role: 'admin',
+      joinedAt: now,
+    });
+    setSelectedConvId(convRef.id);
+    setTab('messages');
+  };
+
+  const callableCustomers = useMemo<UserAccount[]>(() => {
+    if (allUsers.length > 0) {
+      return allUsers.filter((u) => u.accountType === 'customer');
+    }
+    return customerDir.map((c) => ({
+      uid: c.uid,
+      email: '',
+      fullName: c.displayName,
+      accountType: 'customer',
+      role: 'customer',
+      status: 'active',
+      availability: c.availability,
+      createdAt: c.updatedAt,
+      updatedAt: c.updatedAt,
+    }));
+  }, [allUsers, customerDir]);
+
   const navItems: Array<{ id: WorkspaceTab; label: string; shortLabel: string; Icon: React.ElementType }> = [
     { id: 'overview', label: 'Overview', shortLabel: 'Home', Icon: LayoutDashboard },
     { id: 'messages', label: 'Messaging', shortLabel: 'Messages', Icon: MessageSquare },
+    { id: 'calls', label: 'Call Desk', shortLabel: 'Calls', Icon: PhoneCall },
     { id: 'meetings', label: 'Meetings & Calendar', shortLabel: 'Meetings', Icon: Video },
     { id: 'directory', label: 'Employee Directory', shortLabel: 'Team', Icon: Users },
     ...(canReports ? [{ id: 'reports' as const, label: 'Reports & Analytics', shortLabel: 'Reports', Icon: BarChart3 }] : []),
@@ -348,7 +404,7 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
             className="w-full min-h-[40px] inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-white/20 hover:bg-white/10 font-medium text-white"
           >
             <LogOut className="w-3.5 h-3.5" />
-            Sign Out
+            Log Out
           </button>
         </div>
       </aside>
@@ -397,6 +453,8 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
                           updateDoc(doc(db, 'notifications', n.id), { read: true });
                           if (n.linkTab === 'meetings') setTab('meetings');
                           else if (n.linkTab === 'messages') setTab('messages');
+                          else if (n.linkTab === 'calls' || n.type === 'call') setTab('calls');
+                          else if (n.linkTab === 'admin' && canAdmin) setTab('admin');
                           setShowNotifications(false);
                         }}
                         className={`p-2.5 rounded-lg border text-xs cursor-pointer ${
@@ -414,9 +472,18 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
             <button
               type="button"
               onClick={toggleTheme}
-              className="min-h-[40px] px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium"
+              className="min-h-[40px] px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium whitespace-nowrap shrink-0"
             >
               {theme === 'dark' ? 'Light' : 'Dark'}
+            </button>
+            <button
+              type="button"
+              onClick={logout}
+              aria-label="Log Out"
+              className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-950/50 text-xs font-medium text-red-700 dark:text-red-300 transition-colors whitespace-nowrap shrink-0"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Log Out</span>
             </button>
           </div>
         </header>
@@ -557,7 +624,33 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
             <MessagingCenter
               mode="employee"
               initialConversationId={selectedConvId}
-              onStartInstantCall={(title, inviteeUids, scope) => launchInstantCall(title, inviteeUids, scope)}
+              onStartInstantCall={(title, inviteeUids, scope) => {
+                const otherUid = inviteeUids.find((id) => id !== profile?.uid);
+                if (inviteeUids.length <= 2 && otherUid && directCallPhase === 'idle') {
+                  setTab('calls');
+                  startDirectCall({ targetUid: otherUid, targetName: title, callType: 'video' });
+                } else {
+                  launchInstantCall(title, inviteeUids, scope);
+                }
+              }}
+            />
+          )}
+
+          {tab === 'calls' && (
+            <DirectCallPanel
+              mode="staff"
+              customers={callableCustomers}
+              onToggleAvailability={async (available) => {
+                await updateAvailability(available ? 'available' : 'away');
+                if (allUsers.length > 0 && profile) {
+                  const updated = allUsers.map((u) =>
+                    u.uid === profile.uid
+                      ? { ...u, availability: available ? ('available' as const) : ('away' as const) }
+                      : u
+                  );
+                  await syncSupportRoutingDirectory(updated).catch(() => {});
+                }
+              }}
             />
           )}
 
@@ -670,6 +763,7 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
               feedback={feedback}
               transactions={transactions}
               showDemoData={showDemoData}
+              onOpenCustomerChat={openCustomerSupportChat}
             />
           )}
 

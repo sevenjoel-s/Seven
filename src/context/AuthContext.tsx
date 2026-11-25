@@ -351,6 +351,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     setAuthError(null);
+    if (profile && profile.status === 'active') {
+      try {
+        await updateAvailability('offline');
+      } catch {
+        // Best-effort offline presence update should never block signOut
+      }
+    }
     await signOut(auth);
   };
 

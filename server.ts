@@ -19,7 +19,9 @@ if (!getApps().length) {
 
 const adminAuth = getAuth();
 const PORT = Number(process.env.PORT) || 3000;
-const UPLOAD_DIR = path.resolve(process.cwd(), 'uploads');
+const UPLOAD_DIR = process.env.UPLOAD_DIR
+  ? path.resolve(process.env.UPLOAD_DIR)
+  : path.resolve(process.cwd(), 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 export interface AuthRequest extends Request {
@@ -166,7 +168,39 @@ export function createApp(options: AppOptions = {}) {
       whatsappCloud: Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID),
       twilioSms: Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER),
       emailWebhook: Boolean(process.env.SMTP_WEBHOOK_URL),
+      turnConfigured: Boolean(process.env.TURN_URL || process.env.TURN_URLS),
       appUrl: process.env.APP_URL || '',
+    });
+  });
+
+  // WebRTC ICE / STUN / TURN configuration endpoint (keeps TURN credentials server-configured)
+  app.get('/api/rtc/config', requireAuth, (_req, res) => {
+    const stunList = (process.env.STUN_URLS || 'stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const iceServers: Array<{ urls: string | string[]; username?: string; credential?: string }> = [];
+    if (stunList.length > 0) {
+      iceServers.push({ urls: stunList });
+    }
+
+    const turnRaw = process.env.TURN_URLS || process.env.TURN_URL || '';
+    const turnList = turnRaw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (turnList.length > 0) {
+      iceServers.push({
+        urls: turnList,
+        ...(process.env.TURN_USERNAME ? { username: process.env.TURN_USERNAME } : {}),
+        ...(process.env.TURN_CREDENTIAL ? { credential: process.env.TURN_CREDENTIAL } : {}),
+      });
+    }
+
+    res.json({
+      iceServers,
+      turnConfigured: turnList.length > 0,
     });
   });
 
@@ -365,12 +399,23 @@ interface WSClient {
   ws: WebSocket;
   uid: string;
   displayName: string;
+  role?: string;
+  accountType?: string;
   meetingId?: string;
   micMuted?: boolean;
   camOff?: boolean;
   handRaised?: boolean;
   screenSharing?: boolean;
 }
+
+const SUPPORT_STAFF_ROLES = new Set([
+  'support_agent',
+  'company_admin',
+  'super_admin',
+  'it_admin',
+  'department_manager',
+  'hr_manager',
+]);
 
 export function attachWebSocketServer(
   server: http.Server,
@@ -381,7 +426,7 @@ export function attachWebSocketServer(
   const clientsBySocket = new Map<WebSocket, WSClient>();
   const meetingRooms = new Map<string, Set<WebSocket>>();
   const meetingWhiteboards = new Map<string, unknown[]>();
-  const onlineUsers = new Map<string, { uid: string; displayName: string; availability: string }>();
+  const onlineUsers = new Map<string, { uid: string; displayName: string; availability: string; role?: string; accountType?: string }>();
 
   function broadcastPresence() {
     const payload = JSON.stringify({
@@ -393,6 +438,31 @@ export function attachWebSocketServer(
         client.send(payload);
       }
     }
+  }
+
+  function sendToUid(targetUid: string, payload: unknown, excludeSocket?: WebSocket): number {
+    let delivered = 0;
+    const serialized = JSON.stringify(payload);
+    for (const [sock, client] of clientsBySocket.entries()) {
+      if (sock !== excludeSocket && client.uid === targetUid && sock.readyState === WebSocket.OPEN) {
+        sock.send(serialized);
+        delivered += 1;
+      }
+    }
+    return delivered;
+  }
+
+  function sendToStaff(payload: unknown, excludeSocket?: WebSocket): number {
+    let delivered = 0;
+    const serialized = JSON.stringify(payload);
+    for (const [sock, client] of clientsBySocket.entries()) {
+      const isStaff = client.accountType === 'employee' || (client.role ? SUPPORT_STAFF_ROLES.has(client.role) : false);
+      if (sock !== excludeSocket && isStaff && sock.readyState === WebSocket.OPEN) {
+        sock.send(serialized);
+        delivered += 1;
+      }
+    }
+    return delivered;
   }
 
   function broadcastToRoom(meetingId: string, payload: unknown, excludeSocket?: WebSocket) {
@@ -459,16 +529,22 @@ export function attachWebSocketServer(
             typeof msg.displayName === 'string' && msg.displayName
               ? msg.displayName.slice(0, 120)
               : (decoded.name || decoded.email || 'User');
+          const role = typeof msg.role === 'string' ? msg.role.slice(0, 64) : undefined;
+          const accountType = typeof msg.accountType === 'string' ? msg.accountType.slice(0, 32) : undefined;
           const client: WSClient = {
             ws,
             uid: decoded.uid,
             displayName,
+            role,
+            accountType,
           };
           clientsBySocket.set(ws, client);
           onlineUsers.set(decoded.uid, {
             uid: decoded.uid,
             displayName,
             availability: typeof msg.availability === 'string' ? msg.availability : 'available',
+            ...(role ? { role } : {}),
+            ...(accountType ? { accountType } : {}),
           });
           ws.send(JSON.stringify({ type: 'auth:ok', uid: decoded.uid }));
           broadcastPresence();
@@ -485,8 +561,115 @@ export function attachWebSocketServer(
       switch (msg.type) {
         case 'presence:update': {
           const availability = typeof msg.availability === 'string' ? msg.availability : 'available';
-          onlineUsers.set(sender.uid, { uid: sender.uid, displayName: sender.displayName, availability });
+          onlineUsers.set(sender.uid, {
+            uid: sender.uid,
+            displayName: sender.displayName,
+            availability,
+            ...(sender.role ? { role: sender.role } : {}),
+            ...(sender.accountType ? { accountType: sender.accountType } : {}),
+          });
           broadcastPresence();
+          break;
+        }
+
+        case 'call:invite': {
+          const callId = String(msg.callId || '');
+          const callType = msg.callType === 'video' ? 'video' : 'audio';
+          const targetUid = String(msg.targetUid || '');
+          const targetQueue = Boolean(msg.targetQueue) || targetUid === 'support_queue';
+          if (!callId || !targetUid) return;
+
+          const invitePayload = {
+            type: 'call:incoming',
+            callId,
+            callType,
+            callerUid: sender.uid,
+            callerName: sender.displayName,
+            callerRole: sender.role || sender.accountType || 'customer',
+            targetUid,
+            targetQueue,
+            orderId: typeof msg.orderId === 'string' ? msg.orderId : undefined,
+            startedAt: new Date().toISOString(),
+          };
+          const deliveredCount = targetQueue
+            ? sendToStaff(invitePayload, ws)
+            : sendToUid(targetUid, invitePayload, ws);
+          ws.send(JSON.stringify({ type: 'call:ringing', callId, deliveredCount }));
+          break;
+        }
+
+        case 'call:accept': {
+          const callId = String(msg.callId || '');
+          const targetUid = String(msg.targetUid || '');
+          if (!callId || !targetUid) return;
+          sendToUid(targetUid, {
+            type: 'call:accepted',
+            callId,
+            fromUid: sender.uid,
+            fromName: sender.displayName,
+          }, ws);
+          // Dismiss ringing notification on other staff screens if it was a support queue call
+          sendToStaff({
+            type: 'call:claimed',
+            callId,
+            answeredByUid: sender.uid,
+            answeredByName: sender.displayName,
+          }, ws);
+          break;
+        }
+
+        case 'call:reject':
+        case 'call:busy': {
+          const callId = String(msg.callId || '');
+          const targetUid = String(msg.targetUid || '');
+          if (!callId || !targetUid) return;
+          sendToUid(targetUid, {
+            type: msg.type === 'call:busy' ? 'call:busy' : 'call:rejected',
+            callId,
+            fromUid: sender.uid,
+            fromName: sender.displayName,
+            reason: typeof msg.reason === 'string' ? msg.reason : undefined,
+          }, ws);
+          break;
+        }
+
+        case 'call:end': {
+          const callId = String(msg.callId || '');
+          const targetUid = String(msg.targetUid || '');
+          if (!callId) return;
+          const payload = {
+            type: 'call:ended',
+            callId,
+            fromUid: sender.uid,
+            fromName: sender.displayName,
+            reason: typeof msg.reason === 'string' ? msg.reason : 'ended',
+          };
+          if (!targetUid || targetUid === 'support_queue') {
+            sendToStaff(payload, ws);
+          } else {
+            sendToUid(targetUid, payload, ws);
+          }
+          break;
+        }
+
+        case 'call:webrtc-offer':
+        case 'call:webrtc-answer':
+        case 'call:webrtc-ice':
+        case 'call:media-state': {
+          const callId = String(msg.callId || '');
+          const targetUid = String(msg.targetUid || '');
+          if (!callId || !targetUid) return;
+          sendToUid(targetUid, {
+            type: msg.type,
+            callId,
+            fromUid: sender.uid,
+            fromName: sender.displayName,
+            sdp: msg.sdp,
+            candidate: msg.candidate,
+            micMuted: msg.micMuted,
+            camOff: msg.camOff,
+            audioOnly: msg.audioOnly,
+          }, ws);
           break;
         }
 

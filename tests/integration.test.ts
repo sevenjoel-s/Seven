@@ -101,6 +101,81 @@ describe('Integration Tests — WebSocket Signaling, Presence, Whiteboard & UI C
     }
   });
 
+  it('routes 1:1 customer-to-staff call signaling (call:invite, call:accept, call:claimed, call:webrtc-offer) via WebSocket', async () => {
+    const app = createApp();
+    const server = http.createServer(app);
+    attachWebSocketServer(
+      server,
+      async (token) => {
+        if (token === 'token-customer') {
+          return { uid: 'cust-1', email: 'cust1@example.com', name: 'Customer One' } as unknown as DecodedIdToken;
+        }
+        if (token === 'token-agent1') {
+          return { uid: 'agent-1', email: 'agent1@sevensundayethiopia.com', name: 'Agent One' } as unknown as DecodedIdToken;
+        }
+        if (token === 'token-agent2') {
+          return { uid: 'agent-2', email: 'agent2@sevensundayethiopia.com', name: 'Agent Two' } as unknown as DecodedIdToken;
+        }
+        throw new Error('Bad token');
+      },
+      200
+    );
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+    const wsUrl = `ws://127.0.0.1:${port}/ws`;
+
+    try {
+      const cust = new WebSocket(wsUrl);
+      const agent1 = new WebSocket(wsUrl);
+      const agent2 = new WebSocket(wsUrl);
+      await Promise.all([
+        new Promise<void>((resolve) => cust.on('open', () => resolve())),
+        new Promise<void>((resolve) => agent1.on('open', () => resolve())),
+        new Promise<void>((resolve) => agent2.on('open', () => resolve())),
+      ]);
+
+      const authPromises = [
+        waitForMessage(cust, (m) => m.type === 'auth:ok'),
+        waitForMessage(agent1, (m) => m.type === 'auth:ok'),
+        waitForMessage(agent2, (m) => m.type === 'auth:ok'),
+      ];
+      cust.send(JSON.stringify({ type: 'auth', token: 'token-customer', displayName: 'Customer One', role: 'customer', accountType: 'customer' }));
+      agent1.send(JSON.stringify({ type: 'auth', token: 'token-agent1', displayName: 'Agent One', role: 'support_agent', accountType: 'employee' }));
+      agent2.send(JSON.stringify({ type: 'auth', token: 'token-agent2', displayName: 'Agent Two', role: 'support_agent', accountType: 'employee' }));
+      await Promise.all(authPromises);
+
+      const agent1Incoming = waitForMessage(agent1, (m) => m.type === 'call:incoming' && m.callId === 'call_99');
+      const agent2Incoming = waitForMessage(agent2, (m) => m.type === 'call:incoming' && m.callId === 'call_99');
+      const custRinging = waitForMessage(cust, (m) => m.type === 'call:ringing' && m.callId === 'call_99');
+      cust.send(JSON.stringify({ type: 'call:invite', callId: 'call_99', callType: 'video', targetUid: 'support_queue', targetQueue: true }));
+
+      const [ringMsg, inc1, inc2] = await Promise.all([custRinging, agent1Incoming, agent2Incoming]);
+      expect(ringMsg.deliveredCount).toBe(2);
+      expect(inc1.callerUid).toBe('cust-1');
+      expect(inc2.callType).toBe('video');
+
+      const custAccepted = waitForMessage(cust, (m) => m.type === 'call:accepted' && m.callId === 'call_99');
+      const agent2Claimed = waitForMessage(agent2, (m) => m.type === 'call:claimed' && m.callId === 'call_99');
+      agent1.send(JSON.stringify({ type: 'call:accept', callId: 'call_99', targetUid: 'cust-1' }));
+      const [accepted, claimed] = await Promise.all([custAccepted, agent2Claimed]);
+      expect(accepted.fromUid).toBe('agent-1');
+      expect(claimed.answeredByUid).toBe('agent-1');
+
+      const agent1Offer = waitForMessage(agent1, (m) => m.type === 'call:webrtc-offer' && m.callId === 'call_99');
+      cust.send(JSON.stringify({ type: 'call:webrtc-offer', callId: 'call_99', targetUid: 'agent-1', sdp: { type: 'offer', sdp: 'v=0' } }));
+      const forwardedOffer = await agent1Offer;
+      expect((forwardedOffer.sdp as { sdp: string }).sdp).toBe('v=0');
+
+      cust.close();
+      agent1.close();
+      agent2.close();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it('renders DocumentPreviewModal with Print, Download, Add, Remove, and Close actions working end-to-end', () => {
     const onPrint = vi.fn();
     const onDownload = vi.fn();

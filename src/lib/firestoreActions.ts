@@ -2,6 +2,7 @@ import {
   addDoc,
   collection,
   doc,
+  getDoc,
   getDocs,
   query,
   setDoc,
@@ -12,10 +13,15 @@ import { db, handleFirestoreError, OperationType } from './firebase';
 import { hasPermission } from './rbac';
 import {
   AuditLog,
+  CallRecord,
   CustomerOrder,
+  DeliveryAddress,
   FinancialTransaction,
   NotificationItem,
   OrderItem,
+  OrderStatus,
+  ShoppingCartItem,
+  SupportAgentInfo,
   SyncRecord,
   UserAccount,
 } from '../types/domain';
@@ -130,17 +136,110 @@ export async function uploadFileToServer(file: File, token: string): Promise<{
   return resp.json();
 }
 
+export async function savePersistentCart(customerUid: string, items: ShoppingCartItem[]) {
+  const now = new Date().toISOString();
+  await setDoc(doc(db, 'shoppingCarts', customerUid), {
+    customerUid,
+    items: items.slice(0, 50),
+    updatedAt: now,
+  });
+}
+
+export async function saveCustomerDeliveryAddress(
+  customerUid: string,
+  payload: Omit<DeliveryAddress, 'id' | 'customerUid' | 'createdAt' | 'updatedAt'>,
+  existingAddresses: DeliveryAddress[]
+) {
+  const now = new Date().toISOString();
+  const batch = writeBatch(db);
+  if (payload.isDefault) {
+    existingAddresses
+      .filter((a) => a.isDefault)
+      .forEach((a) => {
+        batch.update(doc(db, 'deliveryAddresses', a.id), { isDefault: false, updatedAt: now });
+      });
+  }
+  const ref = doc(collection(db, 'deliveryAddresses'));
+  batch.set(ref, {
+    customerUid,
+    label: payload.label.trim().slice(0, 60),
+    recipientName: payload.recipientName.trim().slice(0, 120),
+    phone: payload.phone.trim().slice(0, 40),
+    city: payload.city.trim().slice(0, 80),
+    ...(payload.subCity?.trim() ? { subCity: payload.subCity.trim().slice(0, 80) } : {}),
+    streetAddress: payload.streetAddress.trim().slice(0, 300),
+    ...(payload.notes?.trim() ? { notes: payload.notes.trim().slice(0, 300) } : {}),
+    isDefault: payload.isDefault,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await batch.commit();
+  return ref.id;
+}
+
+export async function syncSupportRoutingDirectory(users: UserAccount[]) {
+  const staffRoles = new Set(['support_agent', 'company_admin', 'super_admin', 'department_manager']);
+  const activeAgents = users.filter((u) => u.status === 'active' && staffRoles.has(u.role));
+  const agentUids = activeAgents.map((u) => u.uid).slice(0, 50);
+  const supportAgents: SupportAgentInfo[] = activeAgents.slice(0, 50).map((u) => ({
+    uid: u.uid,
+    fullName: u.fullName,
+    role: u.role,
+    ...(u.jobTitle ? { jobTitle: u.jobTitle } : {}),
+    availability: u.availability || 'available',
+  }));
+  await setDoc(doc(db, 'publicConfig', 'supportRouting'), {
+    agentUids,
+    supportAgents,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+export async function createCallRecord(payload: Omit<CallRecord, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
+  const now = new Date().toISOString();
+  const ref = await addDoc(collection(db, 'calls'), {
+    ...payload,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return ref.id;
+}
+
+export async function updateCallRecord(callId: string, patch: Partial<CallRecord>) {
+  const now = new Date().toISOString();
+  await setDoc(
+    doc(db, 'calls', callId),
+    {
+      ...patch,
+      updatedAt: now,
+    },
+    { merge: true }
+  );
+}
+
+const ORDER_NOTIFICATION_COPY: Record<OrderStatus, { title: string; body: string }> = {
+  pending: { title: 'Order Submitted', body: 'has been submitted and is awaiting confirmation.' },
+  confirmed: { title: 'Order Confirmed', body: 'has been confirmed by Seven Sunday PLC.' },
+  processing: { title: 'Order Processing', body: 'is now being prepared and packed.' },
+  ready_for_delivery: { title: 'Order Ready for Delivery', body: 'is packed and ready for dispatch.' },
+  shipped: { title: 'Order Dispatched / Shipped', body: 'is on its way to your delivery address.' },
+  delivered: { title: 'Order Delivered', body: 'has been marked as delivered.' },
+  cancelled: { title: 'Order Cancelled', body: 'has been cancelled and logged on the ledger.' },
+};
+
 export async function placeOrderWithTransaction(params: {
   customer: Pick<UserAccount, 'uid' | 'fullName' | 'email' | 'role'>;
   items: OrderItem[];
   total: number;
   currency: string;
   shippingAddress: string;
+  customerPhone?: string;
+  deliveryCity?: string;
   notes?: string;
   paymentMethod: FinancialTransaction['method'];
 }): Promise<{ orderId: string; orderNumber: string; invoiceNumber: string; txNumber: string }> {
   const now = new Date().toISOString();
-  const suffix = Date.now().toString().slice(-6);
+  const suffix = `${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 90 + 10)}`;
   const orderNumber = `ORD-${suffix}`;
   const invoiceNumber = `INV-${suffix}`;
   const txNumber = `TXN-${suffix}`;
@@ -155,13 +254,23 @@ export async function placeOrderWithTransaction(params: {
     customerUid: params.customer.uid,
     customerName: params.customer.fullName,
     customerEmail: params.customer.email,
+    ...(params.customerPhone?.trim() ? { customerPhone: params.customerPhone.trim().slice(0, 40) } : {}),
     items: params.items,
     subtotal: params.total,
     tax: 0,
     total: params.total,
     currency: params.currency,
     status: 'pending',
+    statusHistory: [
+      {
+        status: 'pending',
+        timestamp: now,
+        actorUid: params.customer.uid,
+        note: 'Order submitted via 7Sunday Ethiopia Customer Portal',
+      },
+    ],
     shippingAddress: params.shippingAddress.trim(),
+    ...(params.deliveryCity?.trim() ? { deliveryCity: params.deliveryCity.trim().slice(0, 80) } : {}),
     ...(params.notes?.trim() ? { notes: params.notes.trim() } : {}),
     isDemo: false,
     createdAt: now,
@@ -187,15 +296,46 @@ export async function placeOrderWithTransaction(params: {
     updatedAt: now,
   });
 
+  batch.set(doc(db, 'shoppingCarts', params.customer.uid), {
+    customerUid: params.customer.uid,
+    items: [],
+    updatedAt: now,
+  });
+
   await batch.commit();
+
   await createNotification(
     params.customer.uid,
     'order',
-    `Order ${orderNumber} & Receipt ${txNumber}`,
-    `Order totaling ${params.currency} ${params.total.toFixed(2)} recorded on ledger.`,
+    `Order Submitted — ${orderNumber}`,
+    `Order totaling ${params.currency} ${params.total.toFixed(2)} (Receipt ${txNumber}) submitted.`,
     'orders',
     orderRef.id
   );
+
+  // Notify routed customer care / admin staff of the new order
+  try {
+    const routingSnap = await getDoc(doc(db, 'publicConfig', 'supportRouting'));
+    if (routingSnap.exists()) {
+      const agentUids = (routingSnap.data().agentUids || []) as string[];
+      agentUids
+        .filter((uid) => uid !== params.customer.uid)
+        .slice(0, 8)
+        .forEach((uid) => {
+          createNotification(
+            uid,
+            'order',
+            `New Customer Order ${orderNumber}`,
+            `${params.customer.fullName} submitted ${params.currency} ${params.total.toFixed(2)}.`,
+            'admin',
+            orderRef.id
+          ).catch(() => {});
+        });
+    }
+  } catch {
+    // non-fatal if routing doc hasn't been initialized yet
+  }
+
   await logAuditEvent(
     params.customer,
     'ORDER_AND_TRANSACTION_CREATED',
@@ -210,14 +350,29 @@ export async function placeOrderWithTransaction(params: {
 export async function processOrderStatusWithAudit(
   actor: UserAccount,
   order: CustomerOrder,
-  nextStatus: CustomerOrder['status']
+  nextStatus: CustomerOrder['status'],
+  note?: string
 ) {
   if (!hasPermission(actor, 'orders', 'edit') && !hasPermission(actor, 'orders', 'approve')) {
     throw new Error('Permission denied: insufficient privileges to update order status.');
   }
   const now = new Date().toISOString();
   const batch = writeBatch(db);
-  batch.update(doc(db, 'orders', order.id), { status: nextStatus, updatedAt: now });
+  const existingHistory = Array.isArray(order.statusHistory) ? order.statusHistory : [];
+  const nextHistory = [
+    ...existingHistory.slice(-28),
+    {
+      status: nextStatus,
+      timestamp: now,
+      actorUid: actor.uid,
+      ...(note ? { note: note.slice(0, 200) } : {}),
+    },
+  ];
+  batch.update(doc(db, 'orders', order.id), {
+    status: nextStatus,
+    statusHistory: nextHistory,
+    updatedAt: now,
+  });
 
   if (nextStatus === 'cancelled') {
     const refundRef = doc(collection(db, 'financialTransactions'));
@@ -244,11 +399,38 @@ export async function processOrderStatusWithAudit(
   }
 
   await batch.commit();
+
+  // Deduct stock cleanly when confirming a pending order
+  if (order.status === 'pending' && nextStatus === 'confirmed') {
+    for (const item of order.items) {
+      try {
+        const prodRef = doc(db, 'products', item.productId);
+        const prodSnap = await getDoc(prodRef);
+        if (prodSnap.exists()) {
+          const currentStock = Number(prodSnap.data().stock || 0);
+          const nextStock = Math.max(0, currentStock - item.quantity);
+          await setDoc(
+            prodRef,
+            {
+              stock: nextStock,
+              availabilityStatus: nextStock === 0 ? 'out_of_stock' : nextStock <= 5 ? 'low_stock' : 'in_stock',
+              updatedAt: now,
+            },
+            { merge: true }
+          );
+        }
+      } catch {
+        // Skip if product was removed
+      }
+    }
+  }
+
+  const copy = ORDER_NOTIFICATION_COPY[nextStatus];
   await createNotification(
     order.customerUid,
     'order',
-    `Order ${order.orderNumber} Updated`,
-    `Your order status is now ${nextStatus}.`,
+    `${copy.title} — ${order.orderNumber}`,
+    `Order ${order.orderNumber} ${copy.body}`,
     'orders',
     order.id
   );

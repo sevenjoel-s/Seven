@@ -50,6 +50,7 @@ import {
   ConversationScope,
   ConversationType,
   CustomerDirectoryEntry,
+  CustomerOrder,
   Department,
   EmployeeDirectoryEntry,
   UserBookmark,
@@ -60,6 +61,7 @@ interface MessagingCenterProps {
   mode: 'employee' | 'customer_support' | 'customer_community';
   onStartInstantCall?: (title: string, inviteeUids: string[], scope: 'internal' | 'customer') => void;
   initialConversationId?: string | null;
+  customerOrders?: CustomerOrder[];
 }
 
 const REACTION_CHOICES = ['👍', '✅', '❤️', '👏'];
@@ -68,6 +70,7 @@ export const MessagingCenter: React.FC<MessagingCenterProps> = ({
   mode,
   onStartInstantCall,
   initialConversationId,
+  customerOrders = [],
 }) => {
   const { profile, getToken } = useAuth();
   const { onlineUsers, send: wsSend, subscribe: wsSubscribe } = useWebSocket();
@@ -100,6 +103,7 @@ export const MessagingCenter: React.FC<MessagingCenterProps> = ({
   const [newConvName, setNewConvName] = useState('');
   const [newConvMembers, setNewConvMembers] = useState<string[]>([]);
   const [newConvDept, setNewConvDept] = useState('');
+  const [newConvOrderId, setNewConvOrderId] = useState('');
 
   const [typingPeers, setTypingPeers] = useState<Record<string, string>>({});
   const [uploading, setUploading] = useState(false);
@@ -121,31 +125,68 @@ export const MessagingCenter: React.FC<MessagingCenterProps> = ({
   useEffect(() => {
     if (!profile) return;
     const colRef = collection(db, 'conversations');
-    const q =
-      mode === 'customer_community'
-        ? query(colRef, where('scope', '==', 'customer'))
-        : query(colRef, where('memberUids', 'array-contains', profile.uid));
 
-    const unsub = onSnapshot(
-      q,
+    if (mode === 'customer_community') {
+      return onSnapshot(
+        query(colRef, where('scope', '==', 'customer')),
+        (snap) => {
+          const list = snap.docs
+            .map((d) => ({ id: d.id, ...(d.data() as Omit<Conversation, 'id'>) }))
+            .filter((c) => c.scope === 'customer')
+            .sort((a, b) => (b.lastMessageAt || b.updatedAt).localeCompare(a.lastMessageAt || a.updatedAt));
+          setConversations(list);
+          if (!selectedId && list.length > 0) setSelectedId(list[0].id);
+        },
+        (err) => handleFirestoreError(err, OperationType.LIST, 'conversations')
+      );
+    }
+
+    const byMember = new Map<string, Conversation>();
+    const bySupport = new Map<string, Conversation>();
+    const syncList = () => {
+      const merged = new Map<string, Conversation>([...byMember, ...bySupport]);
+      const list = Array.from(merged.values())
+        .filter((c) => (mode === 'employee' ? c.scope === 'internal' || c.scope === 'support' : c.scope === 'support'))
+        .sort((a, b) => (b.lastMessageAt || b.updatedAt).localeCompare(a.lastMessageAt || a.updatedAt));
+      setConversations(list);
+      if (!selectedId && list.length > 0) {
+        setSelectedId(list[0].id);
+      }
+    };
+
+    const unsubMember = onSnapshot(
+      query(colRef, where('memberUids', 'array-contains', profile.uid)),
       (snap) => {
-        const list = snap.docs
-          .map((d) => ({ id: d.id, ...(d.data() as Omit<Conversation, 'id'>) }))
-          .filter((c) => {
-            if (mode === 'employee') return c.scope === 'internal' || c.scope === 'support';
-            if (mode === 'customer_support') return c.scope === 'support';
-            return c.scope === 'customer';
-          })
-          .sort((a, b) => (b.lastMessageAt || b.updatedAt).localeCompare(a.lastMessageAt || a.updatedAt));
-        setConversations(list);
-        if (!selectedId && list.length > 0) {
-          setSelectedId(list[0].id);
-        }
+        byMember.clear();
+        snap.docs.forEach((d) => byMember.set(d.id, { id: d.id, ...(d.data() as Omit<Conversation, 'id'>) }));
+        syncList();
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'conversations')
     );
-    return () => unsub();
-  }, [profile?.uid, mode]);
+
+    const canAccessSupportQueue =
+      mode === 'employee' &&
+      profile.accountType === 'employee' &&
+      ['support_agent', 'department_manager', 'hr_manager', 'company_admin', 'super_admin', 'it_admin'].includes(profile.role);
+
+    let unsubSupport: (() => void) | null = null;
+    if (canAccessSupportQueue) {
+      unsubSupport = onSnapshot(
+        query(colRef, where('scope', '==', 'support')),
+        (snap) => {
+          bySupport.clear();
+          snap.docs.forEach((d) => bySupport.set(d.id, { id: d.id, ...(d.data() as Omit<Conversation, 'id'>) }));
+          syncList();
+        },
+        () => {}
+      );
+    }
+
+    return () => {
+      unsubMember();
+      if (unsubSupport) unsubSupport();
+    };
+  }, [profile?.uid, profile?.accountType, profile?.role, mode]);
 
   useEffect(() => {
     if (!profile) return;
@@ -547,6 +588,7 @@ export const MessagingCenter: React.FC<MessagingCenterProps> = ({
       scope,
       name: convName.slice(0, 140),
       ...(newConvDept ? { departmentId: newConvDept } : {}),
+      ...(newConvOrderId ? { orderId: newConvOrderId } : {}),
       createdBy: profile.uid,
       memberUids: Array.from(memberSet).slice(0, 50),
       adminUids: [profile.uid],
@@ -566,6 +608,7 @@ export const MessagingCenter: React.FC<MessagingCenterProps> = ({
     setShowCreateModal(false);
     setNewConvName('');
     setNewConvMembers([]);
+    setNewConvOrderId('');
     setSelectedId(convRef.id);
     setMobileThreadOpen(true);
   };
@@ -682,6 +725,7 @@ export const MessagingCenter: React.FC<MessagingCenterProps> = ({
               filteredConversations.map((conv) => {
                 const otherUids = conv.memberUids.filter((id) => id !== profile?.uid);
                 const anyOnline = otherUids.some((id) => onlineUidSet.has(id));
+                const linkedOrder = conv.orderId ? customerOrders.find((o) => o.id === conv.orderId) : undefined;
                 return (
                   <button
                     key={conv.id}
@@ -712,6 +756,7 @@ export const MessagingCenter: React.FC<MessagingCenterProps> = ({
                       </p>
                       <p className="text-[11px] text-slate-400 tabular-nums">
                         {conv.type.replace('_', ' ')} · {conv.memberUids.length} members
+                        {linkedOrder ? ` · Order ${linkedOrder.orderNumber}` : conv.orderId ? ` · Ref ${conv.orderId.slice(0, 8)}` : ''}
                       </p>
                     </div>
                   </button>
@@ -759,6 +804,9 @@ export const MessagingCenter: React.FC<MessagingCenterProps> = ({
                     {activeConv.scope === 'internal' ? 'Internal Corporate Channel' : activeConv.scope === 'support' ? 'Customer Support Thread' : 'Customer Community'}
                     {' · '}
                     <span className="tabular-nums">{activeConv.memberUids.length}</span> participants
+                    {activeConv.orderId
+                      ? ` · Linked Order ${customerOrders.find((o) => o.id === activeConv.orderId)?.orderNumber || activeConv.orderId.slice(0, 8)}`
+                      : ''}
                   </p>
                 </div>
               </div>
@@ -1239,6 +1287,26 @@ export const MessagingCenter: React.FC<MessagingCenterProps> = ({
                 className="w-full min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
               />
             </div>
+
+            {mode === 'customer_support' && customerOrders.length > 0 && (
+              <div>
+                <label className="block text-xs font-medium text-[#293858] dark:text-slate-300 mb-1">
+                  Link Order (Optional)
+                </label>
+                <select
+                  value={newConvOrderId}
+                  onChange={(e) => setNewConvOrderId(e.target.value)}
+                  className="w-full min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
+                >
+                  <option value="">General Customer Care</option>
+                  {customerOrders.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.orderNumber} — {o.currency} {o.total.toFixed(2)} ({o.status.replace(/_/g, ' ')})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {newConvType === 'department' && departments.length > 0 && (
               <div>

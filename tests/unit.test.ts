@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { hasPermission, isAdminRole, ROLE_LABELS, ROLE_MATRIX } from '../src/lib/rbac';
 import { detectDeviceClass } from '../src/components/shared/SyncAndSecurityCenter';
+import { ORDER_STATUS_LABELS } from '../src/lib/exportUtils';
 import { UserAccount } from '../src/types/domain';
 
 function makeUser(overrides: Partial<UserAccount> = {}): UserAccount {
@@ -66,5 +67,18 @@ describe('Unit Tests — RBAC, Device Detection & Domain Rules', () => {
     expect(detectDeviceClass('Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X)', 820).id).toBe('tablet');
     expect(detectDeviceClass('Mozilla/5.0 (Linux; Android 14; SM-X810)', 1024).id).toBe('tablet');
     expect(detectDeviceClass('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0', 1440).id).toBe('desktop');
+  });
+
+  it('defines labels for all 7 order tracking statuses including ready_for_delivery', () => {
+    expect(Object.keys(ORDER_STATUS_LABELS)).toEqual([
+      'pending',
+      'confirmed',
+      'processing',
+      'ready_for_delivery',
+      'shipped',
+      'delivered',
+      'cancelled',
+    ]);
+    expect(ORDER_STATUS_LABELS.ready_for_delivery).toBe('Ready for Delivery');
   });
 });

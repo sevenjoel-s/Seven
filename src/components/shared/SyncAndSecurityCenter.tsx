@@ -6,6 +6,7 @@ import {
   Fingerprint,
   KeyRound,
   Laptop,
+  LogOut,
   Mic,
   RefreshCw,
   Shield,
@@ -34,7 +35,7 @@ export function detectDeviceClass(ua = typeof navigator !== 'undefined' ? naviga
 }
 
 export const SyncAndSecurityCenter: React.FC = () => {
-  const { profile, getToken, requestPasswordReset } = useAuth();
+  const { profile, getToken, requestPasswordReset, logout } = useAuth();
   const [syncRecords, setSyncRecords] = useState<SyncRecord[]>([]);
   const [syncingType, setSyncingType] = useState<string | null>(null);
   const [autoSync, setAutoSync] = useState(() => window.localStorage.getItem('7sunday_autosync') !== 'false');
@@ -443,6 +444,21 @@ export const SyncAndSecurityCenter: React.FC = () => {
               >
                 <KeyRound className="w-3.5 h-3.5 text-[#1178B9]" />
                 <span>Send Reset</span>
+              </button>
+            </div>
+
+            <div className="pt-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="font-medium text-sm">Session & Sign Out</p>
+                <p className="text-slate-500">End your current authenticated session on this device</p>
+              </div>
+              <button
+                type="button"
+                onClick={logout}
+                className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-950/50 text-red-700 dark:text-red-300 font-medium"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Log Out</span>
               </button>
             </div>
           </div>

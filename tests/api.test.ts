@@ -54,6 +54,54 @@ describe('API Tests — Express Backend Endpoints & Security Headers', () => {
     expect(auth.body).toHaveProperty('whatsappCloud');
     expect(auth.body).toHaveProperty('twilioSms');
     expect(auth.body).toHaveProperty('emailWebhook');
+    expect(auth.body).toHaveProperty('turnConfigured');
+  });
+
+  it('GET /api/rtc/config enforces auth and returns STUN plus optional TURN ICE servers', async () => {
+    const unauth = await request(app).get('/api/rtc/config');
+    expect(unauth.status).toBe(401);
+
+    const prevTurn = process.env.TURN_URL;
+    const prevUser = process.env.TURN_USERNAME;
+    const prevCred = process.env.TURN_CREDENTIAL;
+
+    try {
+      delete process.env.TURN_URL;
+      delete process.env.TURN_URLS;
+      const defaultRes = await request(app)
+        .get('/api/rtc/config')
+        .set('Authorization', 'Bearer valid-test-token');
+      expect(defaultRes.status).toBe(200);
+      expect(defaultRes.body.turnConfigured).toBe(false);
+      expect(Array.isArray(defaultRes.body.iceServers)).toBe(true);
+      expect(defaultRes.body.iceServers.length).toBeGreaterThanOrEqual(1);
+
+      process.env.TURN_URL = 'turn:turn.sevensundayethiopia.com:3478';
+      process.env.TURN_USERNAME = '7sunday_rtc';
+      process.env.TURN_CREDENTIAL = 'secret_pass';
+
+      const turnRes = await request(app)
+        .get('/api/rtc/config')
+        .set('Authorization', 'Bearer valid-test-token');
+      expect(turnRes.status).toBe(200);
+      expect(turnRes.body.turnConfigured).toBe(true);
+      expect(turnRes.body.iceServers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            urls: ['turn:turn.sevensundayethiopia.com:3478'],
+            username: '7sunday_rtc',
+            credential: 'secret_pass',
+          }),
+        ])
+      );
+    } finally {
+      if (prevTurn === undefined) delete process.env.TURN_URL;
+      else process.env.TURN_URL = prevTurn;
+      if (prevUser === undefined) delete process.env.TURN_USERNAME;
+      else process.env.TURN_USERNAME = prevUser;
+      if (prevCred === undefined) delete process.env.TURN_CREDENTIAL;
+      else process.env.TURN_CREDENTIAL = prevCred;
+    }
   });
 
   it('POST /api/uploads accepts valid files and serves them securely with nosniff', async () => {

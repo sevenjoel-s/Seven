@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   KeyRound,
   Lock,
+  LogOut,
   Mail,
   RefreshCw,
   Shield,
@@ -145,9 +146,10 @@ export const PortalGateway: React.FC<PortalGatewayProps> = ({ onGuestJoinCode })
               <button
                 type="button"
                 onClick={logout}
-                className="min-h-[44px] px-4 py-2 text-sm text-slate-500 hover:text-[#15243A] dark:hover:text-slate-200"
+                className="min-h-[44px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-[#293858] dark:text-slate-200 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/30 dark:hover:text-red-400"
               >
-                Sign Out
+                <LogOut className="w-4 h-4" />
+                Log Out
               </button>
             </div>
             {notice && <p className="text-xs text-[#1178B9] dark:text-[#087CEB]">{notice}</p>}
@@ -189,9 +191,10 @@ export const PortalGateway: React.FC<PortalGatewayProps> = ({ onGuestJoinCode })
               <button
                 type="button"
                 onClick={logout}
-                className="min-h-[44px] px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-[#293858] dark:text-slate-200"
+                className="min-h-[44px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-[#293858] dark:text-slate-200 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/30 dark:hover:text-red-400"
               >
-                Sign Out
+                <LogOut className="w-4 h-4" />
+                Log Out
               </button>
             </div>
           </div>
@@ -246,6 +249,16 @@ export const PortalGateway: React.FC<PortalGatewayProps> = ({ onGuestJoinCode })
             >
               {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
             </button>
+            {firebaseUser && (
+              <button
+                type="button"
+                onClick={logout}
+                className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-950/50 transition-colors whitespace-nowrap shrink-0"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Log Out</span>
+              </button>
+            )}
           </div>
         </div>
       </header>

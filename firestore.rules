@@ -283,17 +283,17 @@ service cloud.firestore {
         && data.updatedAt is string && data.updatedAt.size() <= 64;
     }
 
-    function isValidProduct(data) {
-      return data.keys().hasAll(['name', 'sku', 'category', 'price', 'currency', 'stock', 'active', 'createdBy', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['name', 'sku', 'category', 'description', 'price', 'currency', 'stock', 'imageUrl', 'active', 'createdBy', 'isDemo', 'demoBatchId', 'createdAt', 'updatedAt'])
-        && data.name is string && data.name.size() >= 1 && data.name.size() <= 160
-        && data.sku is string && data.sku.size() >= 1 && data.sku.size() <= 64
-        && data.category is string && data.category.size() >= 1 && data.category.size() <= 80
-        && (!('description' in data) || (data.description is string && data.description.size() <= 1200))
-        && data.price is number && data.price >= 0
-        && data.currency is string && data.currency.size() >= 1 && data.currency.size() <= 8
-        && data.stock is number && data.stock >= 0
+    function isValidProductCategory(data) {
+      return data.keys().hasAll(['name', 'slug', 'active', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'name', 'slug', 'description', 'imageUrl', 'sortOrder', 'active',
+          'createdBy', 'isDemo', 'demoBatchId', 'createdAt', 'updatedAt'
+        ])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.slug is string && data.slug.size() >= 1 && data.slug.size() <= 100
+        && (!('description' in data) || (data.description is string && data.description.size() <= 600))
         && (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 500))
+        && (!('sortOrder' in data) || data.sortOrder is number)
         && data.active is bool
         && data.createdBy is string && data.createdBy.size() <= 128
         && (!('isDemo' in data) || data.isDemo is bool)
@@ -302,28 +302,113 @@ service cloud.firestore {
         && data.updatedAt is string && data.updatedAt.size() <= 64;
     }
 
+    function isValidProduct(data) {
+      return data.keys().hasAll(['name', 'sku', 'category', 'price', 'currency', 'stock', 'active', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'name', 'sku', 'category', 'categoryId', 'description', 'unit', 'specifications',
+          'price', 'currency', 'stock', 'availabilityStatus', 'imageUrl', 'galleryImages',
+          'active', 'createdBy', 'isDemo', 'demoBatchId', 'createdAt', 'updatedAt'
+        ])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 160
+        && data.sku is string && data.sku.size() >= 1 && data.sku.size() <= 64
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 80
+        && (!('categoryId' in data) || (data.categoryId is string && data.categoryId.size() <= 128))
+        && (!('description' in data) || (data.description is string && data.description.size() <= 2000))
+        && (!('unit' in data) || (data.unit is string && data.unit.size() <= 40))
+        && (!('specifications' in data) || (data.specifications is list && data.specifications.size() <= 40))
+        && data.price is number && data.price >= 0
+        && data.currency is string && data.currency.size() >= 1 && data.currency.size() <= 8
+        && data.stock is number && data.stock >= 0
+        && (!('availabilityStatus' in data) || data.availabilityStatus in ['in_stock', 'low_stock', 'out_of_stock', 'preorder'])
+        && (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 500))
+        && (!('galleryImages' in data) || (data.galleryImages is list && data.galleryImages.size() <= 12 && (data.galleryImages.size() == 0 || data.galleryImages[0] is string)))
+        && data.active is bool
+        && data.createdBy is string && data.createdBy.size() <= 128
+        && (!('isDemo' in data) || data.isDemo is bool)
+        && (!('demoBatchId' in data) || (data.demoBatchId is string && data.demoBatchId.size() <= 64))
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidShoppingCart(data) {
+      return data.keys().hasAll(['customerUid', 'items', 'updatedAt'])
+        && data.keys().hasOnly(['customerUid', 'items', 'updatedAt'])
+        && isValidId(data.customerUid)
+        && data.items is list && data.items.size() <= 50
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidDeliveryAddress(data) {
+      return data.keys().hasAll(['customerUid', 'label', 'recipientName', 'phone', 'city', 'streetAddress', 'isDefault', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'customerUid', 'label', 'recipientName', 'phone', 'city',
+          'subCity', 'streetAddress', 'notes', 'isDefault', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.customerUid)
+        && data.label is string && data.label.size() >= 1 && data.label.size() <= 60
+        && data.recipientName is string && data.recipientName.size() >= 1 && data.recipientName.size() <= 120
+        && data.phone is string && data.phone.size() >= 4 && data.phone.size() <= 40
+        && data.city is string && data.city.size() >= 1 && data.city.size() <= 80
+        && (!('subCity' in data) || (data.subCity is string && data.subCity.size() <= 80))
+        && data.streetAddress is string && data.streetAddress.size() >= 3 && data.streetAddress.size() <= 300
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 300))
+        && data.isDefault is bool
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
     function isValidOrder(data) {
       return data.keys().hasAll(['orderNumber', 'invoiceNumber', 'customerUid', 'customerName', 'items', 'total', 'currency', 'status', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
-          'orderNumber', 'invoiceNumber', 'customerUid', 'customerName', 'customerEmail',
-          'items', 'subtotal', 'tax', 'total', 'currency', 'status',
-          'shippingAddress', 'notes', 'isDemo', 'demoBatchId', 'createdAt', 'updatedAt'
+          'orderNumber', 'invoiceNumber', 'customerUid', 'customerName', 'customerEmail', 'customerPhone',
+          'items', 'subtotal', 'tax', 'total', 'currency', 'status', 'statusHistory',
+          'shippingAddress', 'deliveryCity', 'notes', 'isDemo', 'demoBatchId', 'createdAt', 'updatedAt'
         ])
         && data.orderNumber is string && data.orderNumber.size() >= 1 && data.orderNumber.size() <= 40
         && data.invoiceNumber is string && data.invoiceNumber.size() >= 1 && data.invoiceNumber.size() <= 40
         && isValidId(data.customerUid)
         && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120
         && (!('customerEmail' in data) || (data.customerEmail is string && data.customerEmail.size() <= 200))
+        && (!('customerPhone' in data) || (data.customerPhone is string && data.customerPhone.size() <= 40))
         && data.items is list && data.items.size() >= 1 && data.items.size() <= 50
         && (!('subtotal' in data) || data.subtotal is number)
         && (!('tax' in data) || data.tax is number)
         && data.total is number && data.total >= 0
         && data.currency is string && data.currency.size() >= 1 && data.currency.size() <= 8
-        && data.status in ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled']
+        && data.status in ['pending', 'confirmed', 'processing', 'ready_for_delivery', 'shipped', 'delivered', 'cancelled']
+        && (!('statusHistory' in data) || (data.statusHistory is list && data.statusHistory.size() <= 30))
         && (!('shippingAddress' in data) || (data.shippingAddress is string && data.shippingAddress.size() <= 300))
+        && (!('deliveryCity' in data) || (data.deliveryCity is string && data.deliveryCity.size() <= 80))
         && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
         && (!('isDemo' in data) || data.isDemo is bool)
         && (!('demoBatchId' in data) || (data.demoBatchId is string && data.demoBatchId.size() <= 64))
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidCall(data) {
+      return data.keys().hasAll(['callerUid', 'callerName', 'calleeUid', 'calleeName', 'callType', 'status', 'startedAt', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'callerUid', 'callerName', 'callerRole', 'calleeUid', 'calleeName',
+          'answeredByUid', 'answeredByName', 'callType', 'status', 'orderId',
+          'startedAt', 'answeredAt', 'endedAt', 'durationSeconds', 'endReason',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.callerUid)
+        && data.callerName is string && data.callerName.size() >= 1 && data.callerName.size() <= 120
+        && (!('callerRole' in data) || (data.callerRole is string && data.callerRole.size() <= 64))
+        && isValidId(data.calleeUid)
+        && data.calleeName is string && data.calleeName.size() >= 1 && data.calleeName.size() <= 120
+        && (!('answeredByUid' in data) || (data.answeredByUid is string && data.answeredByUid.size() <= 128))
+        && (!('answeredByName' in data) || (data.answeredByName is string && data.answeredByName.size() <= 120))
+        && data.callType in ['audio', 'video']
+        && data.status in ['ringing', 'active', 'ended', 'rejected', 'missed', 'cancelled']
+        && (!('orderId' in data) || (data.orderId is string && data.orderId.size() <= 128))
+        && data.startedAt is string && data.startedAt.size() <= 64
+        && (!('answeredAt' in data) || (data.answeredAt is string && data.answeredAt.size() <= 64))
+        && (!('endedAt' in data) || (data.endedAt is string && data.endedAt.size() <= 64))
+        && (!('durationSeconds' in data) || (data.durationSeconds is number && data.durationSeconds >= 0))
+        && (!('endReason' in data) || (data.endReason is string && data.endReason.size() <= 160))
         && data.createdAt is string && data.createdAt.size() <= 64
         && data.updatedAt is string && data.updatedAt.size() <= 64;
     }
@@ -379,7 +464,7 @@ service cloud.firestore {
       return data.keys().hasAll(['targetUid', 'type', 'title', 'body', 'read', 'createdAt'])
         && data.keys().hasOnly(['targetUid', 'type', 'title', 'body', 'linkTab', 'linkId', 'read', 'createdAt'])
         && isValidId(data.targetUid)
-        && data.type in ['meeting', 'message', 'order', 'support', 'security', 'system']
+        && data.type in ['meeting', 'message', 'order', 'support', 'security', 'system', 'call']
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 140
         && data.body is string && data.body.size() >= 1 && data.body.size() <= 500
         && (!('linkTab' in data) || (data.linkTab is string && data.linkTab.size() <= 64))
@@ -567,9 +652,10 @@ service cloud.firestore {
         (
           docId == 'supportRouting' && (isAdmin() || isSupportAgent())
           && incoming().keys().hasAll(['agentUids', 'updatedAt'])
-          && incoming().keys().hasOnly(['agentUids', 'updatedAt'])
+          && incoming().keys().hasOnly(['agentUids', 'supportAgents', 'updatedAt'])
           && incoming().agentUids is list && incoming().agentUids.size() <= 50
           && (incoming().agentUids.size() == 0 || incoming().agentUids[0] is string)
+          && (!('supportAgents' in incoming()) || (incoming().supportAgents is list && incoming().supportAgents.size() <= 50))
           && incoming().updatedAt is string && incoming().updatedAt.size() <= 64
         ) || (
           docId == 'appSettings' && isAdmin()
@@ -754,12 +840,47 @@ service cloud.firestore {
       }
     }
 
-    // 10. Products (Customer Catalog)
+    // 10. Product Categories & Products (Customer Catalog)
+    match /productCategories/{categoryId} {
+      allow get: if isValidId(categoryId) && (existing().active == true || isApprovedEmployee() || isAdmin());
+      allow list: if resource.data.active == true || isApprovedEmployee() || isAdmin();
+      allow create, update: if isValidId(categoryId) && isValidProductCategory(incoming()) && (isAdmin() || isApprovedEmployee());
+      allow delete: if isValidId(categoryId) && isAdmin();
+    }
+
     match /products/{productId} {
       allow get: if isValidId(productId) && (existing().active == true || isApprovedEmployee() || isAdmin());
       allow list: if resource.data.active == true || isApprovedEmployee() || isAdmin();
       allow create, update: if isValidId(productId) && isValidProduct(incoming()) && (isAdmin() || isApprovedEmployee());
       allow delete: if isValidId(productId) && isAdmin();
+    }
+
+    // 10b. Persistent Shopping Carts & Saved Delivery Addresses
+    match /shoppingCarts/{customerUid} {
+      allow get: if isValidId(customerUid) && isVerified() && (isOwner(customerUid) || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isValidId(customerUid)
+        && isVerified()
+        && isOwner(customerUid)
+        && isValidShoppingCart(incoming())
+        && incoming().customerUid == request.auth.uid;
+      allow delete: if isValidId(customerUid) && isVerified() && (isOwner(customerUid) || isAdmin());
+    }
+
+    match /deliveryAddresses/{addressId} {
+      allow get: if isValidId(addressId) && isVerified() && (existing().customerUid == request.auth.uid || isSupportAgent() || isAdmin());
+      allow list: if isVerified() && (resource.data.customerUid == request.auth.uid || isSupportAgent() || isAdmin());
+      allow create: if isValidId(addressId)
+        && isVerified()
+        && isValidDeliveryAddress(incoming())
+        && incoming().customerUid == request.auth.uid;
+      allow update: if isValidId(addressId)
+        && isVerified()
+        && isValidDeliveryAddress(incoming())
+        && existing().customerUid == request.auth.uid
+        && incoming().customerUid == existing().customerUid
+        && incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(addressId) && isVerified() && (existing().customerUid == request.auth.uid || isAdmin());
     }
 
     // 11. Customer Orders
@@ -793,10 +914,46 @@ service cloud.firestore {
             existing().customerUid == request.auth.uid &&
             existing().status in ['pending', 'confirmed'] &&
             incoming().status == 'cancelled' &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'statusHistory', 'updatedAt'])
           )
         );
       allow delete: if isValidId(orderId) && isAdmin() && existing().isDemo == true;
+    }
+
+    // 11b. One-to-One Audio & Video Call Logs
+    match /calls/{callId} {
+      allow get: if isValidId(callId) && isVerified() && (
+        existing().callerUid == request.auth.uid ||
+        existing().calleeUid == request.auth.uid ||
+        existing().answeredByUid == request.auth.uid ||
+        isSupportAgent() ||
+        isAdmin()
+      );
+      allow list: if isVerified() && (
+        resource.data.callerUid == request.auth.uid ||
+        resource.data.calleeUid == request.auth.uid ||
+        resource.data.answeredByUid == request.auth.uid ||
+        isSupportAgent() ||
+        isAdmin()
+      );
+      allow create: if isValidId(callId)
+        && isVerified()
+        && isValidCall(incoming())
+        && incoming().callerUid == request.auth.uid
+        && incoming().status == 'ringing';
+      allow update: if isValidId(callId)
+        && isVerified()
+        && isValidCall(incoming())
+        && incoming().callerUid == existing().callerUid
+        && incoming().createdAt == existing().createdAt
+        && (
+          existing().callerUid == request.auth.uid ||
+          existing().calleeUid == request.auth.uid ||
+          existing().answeredByUid == request.auth.uid ||
+          isSupportAgent() ||
+          isAdmin()
+        );
+      allow delete: if isValidId(callId) && isAdmin();
     }
 
     // 12. Financial Transactions Ledger (Audit-backed, real transactions non-deletable)

@@ -185,16 +185,20 @@ export interface MeetingParticipant {
   updatedAt: string;
 }
 
-export interface Product {
+export type ProductAvailabilityStatus = 'in_stock' | 'low_stock' | 'out_of_stock' | 'preorder';
+
+export interface ProductSpecification {
+  key: string;
+  value: string;
+}
+
+export interface ProductCategory {
   id: string;
   name: string;
-  sku: string;
-  category: string;
+  slug: string;
   description?: string;
-  price: number;
-  currency: string;
-  stock: number;
   imageUrl?: string;
+  sortOrder?: number;
   active: boolean;
   createdBy: string;
   isDemo?: boolean;
@@ -203,12 +207,86 @@ export interface Product {
   updatedAt: string;
 }
 
+export interface Product {
+  id: string;
+  name: string;
+  sku: string;
+  category: string;
+  categoryId?: string;
+  description?: string;
+  unit?: string;
+  specifications?: ProductSpecification[];
+  price: number;
+  currency: string;
+  stock: number;
+  availabilityStatus?: ProductAvailabilityStatus;
+  imageUrl?: string;
+  galleryImages?: string[];
+  active: boolean;
+  createdBy: string;
+  isDemo?: boolean;
+  demoBatchId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ShoppingCartItem {
+  productId: string;
+  name?: string;
+  sku?: string;
+  unitPrice?: number;
+  currency?: string;
+  unit?: string;
+  imageUrl?: string;
+  quantity: number;
+  addedAt?: string;
+}
+
+export interface ShoppingCart {
+  customerUid: string;
+  items: ShoppingCartItem[];
+  updatedAt: string;
+}
+
+export interface DeliveryAddress {
+  id: string;
+  customerUid: string;
+  label: string;
+  recipientName: string;
+  phone: string;
+  city: string;
+  subCity?: string;
+  streetAddress: string;
+  notes?: string;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface OrderItem {
   productId: string;
   name: string;
   sku: string;
+  unit?: string;
+  imageUrl?: string;
   quantity: number;
   unitPrice: number;
+}
+
+export type OrderStatus =
+  | 'pending'
+  | 'confirmed'
+  | 'processing'
+  | 'ready_for_delivery'
+  | 'shipped'
+  | 'delivered'
+  | 'cancelled';
+
+export interface OrderStatusHistoryEntry {
+  status: OrderStatus;
+  timestamp: string;
+  actorUid: string;
+  note?: string;
 }
 
 export interface CustomerOrder {
@@ -218,18 +296,50 @@ export interface CustomerOrder {
   customerUid: string;
   customerName: string;
   customerEmail?: string;
+  customerPhone?: string;
   items: OrderItem[];
   subtotal?: number;
   tax?: number;
   total: number;
   currency: string;
-  status: 'pending' | 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled';
+  status: OrderStatus;
+  statusHistory?: OrderStatusHistoryEntry[];
   shippingAddress?: string;
+  deliveryCity?: string;
   notes?: string;
   isDemo?: boolean;
   demoBatchId?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CallRecord {
+  id: string;
+  callerUid: string;
+  callerName: string;
+  callerRole?: string;
+  calleeUid: string;
+  calleeName: string;
+  answeredByUid?: string;
+  answeredByName?: string;
+  callType: 'audio' | 'video';
+  status: 'ringing' | 'active' | 'ended' | 'rejected' | 'missed' | 'cancelled';
+  orderId?: string;
+  startedAt: string;
+  answeredAt?: string;
+  endedAt?: string;
+  durationSeconds?: number;
+  endReason?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SupportAgentInfo {
+  uid: string;
+  fullName: string;
+  role: string;
+  jobTitle?: string;
+  availability: AvailabilityStatus;
 }
 
 export interface FinancialTransaction {
@@ -275,7 +385,7 @@ export interface CustomerFeedback {
 export interface NotificationItem {
   id: string;
   targetUid: string;
-  type: 'meeting' | 'message' | 'order' | 'support' | 'security' | 'system';
+  type: 'meeting' | 'message' | 'order' | 'support' | 'security' | 'system' | 'call';
   title: string;
   body: string;
   linkTab?: string;

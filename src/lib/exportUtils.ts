@@ -65,6 +65,16 @@ export function exportDataToExcel(
   XLSX.writeFile(wb, filename);
 }
 
+export const ORDER_STATUS_LABELS: Record<CustomerOrder['status'], string> = {
+  pending: 'Pending',
+  confirmed: 'Confirmed',
+  processing: 'Processing',
+  ready_for_delivery: 'Ready for Delivery',
+  shipped: 'Shipped',
+  delivered: 'Delivered',
+  cancelled: 'Cancelled',
+};
+
 export function downloadOrderInvoicePDF(order: CustomerOrder) {
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
   doc.setFontSize(20);
@@ -76,34 +86,36 @@ export function downloadOrderInvoicePDF(order: CustomerOrder) {
   doc.text(`Invoice Number: ${order.invoiceNumber}`, 44, 82);
   doc.text(`Order Number: ${order.orderNumber}`, 44, 98);
   doc.text(`Order Date: ${new Date(order.createdAt).toLocaleString()}`, 44, 114);
-  doc.text(`Status: ${order.status.toUpperCase()}`, 44, 130);
+  doc.text(`Status: ${(ORDER_STATUS_LABELS[order.status] || order.status).toUpperCase()}`, 44, 130);
 
   doc.setTextColor(21, 36, 58);
   doc.setFontSize(11);
   doc.text('Bill To:', 360, 82);
   doc.setFontSize(10);
   doc.text(order.customerName, 360, 98);
-  if (order.customerEmail) doc.text(order.customerEmail, 360, 114);
-  if (order.shippingAddress) doc.text(order.shippingAddress.slice(0, 52), 360, 130);
+  if (order.customerPhone) doc.text(`Tel: ${order.customerPhone}`, 360, 114);
+  if (order.customerEmail) doc.text(order.customerEmail, 360, 128);
+  if (order.shippingAddress) doc.text(order.shippingAddress.slice(0, 52), 360, 142);
 
-  let y = 175;
+  let y = 180;
   doc.setFillColor(234, 244, 255);
   doc.rect(44, y - 14, 505, 22, 'F');
   doc.setFontSize(9.5);
   doc.setTextColor(8, 43, 89);
   doc.text('Item', 52, y);
-  doc.text('SKU', 260, y);
-  doc.text('Qty', 360, y);
-  doc.text('Unit Price', 415, y);
+  doc.text('SKU', 250, y);
+  doc.text('Qty', 345, y);
+  doc.text('Unit Price', 410, y);
   doc.text('Line Total', 485, y);
 
   y += 22;
   doc.setTextColor(41, 56, 88);
   order.items.forEach((item) => {
-    doc.text(item.name.slice(0, 34), 52, y);
-    doc.text(item.sku.slice(0, 14), 260, y);
-    doc.text(String(item.quantity), 360, y);
-    doc.text(`${order.currency} ${item.unitPrice.toFixed(2)}`, 415, y);
+    const qtyLabel = item.unit ? `${item.quantity} ${item.unit}` : String(item.quantity);
+    doc.text(item.name.slice(0, 32), 52, y);
+    doc.text(item.sku.slice(0, 14), 250, y);
+    doc.text(qtyLabel.slice(0, 12), 345, y);
+    doc.text(`${order.currency} ${item.unitPrice.toFixed(2)}`, 410, y);
     doc.text(`${order.currency} ${(item.quantity * item.unitPrice).toFixed(2)}`, 485, y);
     y += 20;
   });
@@ -179,6 +191,11 @@ export function downloadDocumentFile(filename: string, content: string, mimeType
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+export function exportDatabaseBackupJSON(data: Record<string, unknown>, filename = `7sunday-backup-${new Date().toISOString().slice(0, 10)}.json`) {
+  const json = JSON.stringify({ exportedAt: new Date().toISOString(), platform: '7Sunday Ethiopia / Seven Sunday Connect', ...data }, null, 2);
+  downloadDocumentFile(filename, json, 'application/json;charset=utf-8');
 }
 
 export function downloadMeetingICS(meeting: Meeting, joinUrl: string) {

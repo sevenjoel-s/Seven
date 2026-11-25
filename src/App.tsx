@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from 'react';
+import { LogOut } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { DirectCallProvider } from './context/DirectCallContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { WebSocketProvider } from './context/WebSocketContext';
+import { IncomingCallOverlay } from './components/calls/IncomingCallOverlay';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
 import { OfflineIndicator } from './components/shared/PWAComponents';
 import { PortalGateway } from './components/auth/PortalGateway';
@@ -73,9 +76,10 @@ const AppRouter: React.FC = () => {
             <button
               type="button"
               onClick={logout}
-              className="min-h-[44px] px-4 py-2 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white text-xs font-medium"
+              className="min-h-[44px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white text-xs font-medium whitespace-nowrap shrink-0"
             >
-              Exit Guest Session
+              <LogOut className="w-4 h-4" />
+              <span>Log Out</span>
             </button>
           </div>
           <MeetingsHub
@@ -100,8 +104,11 @@ export default function App() {
       <ThemeProvider>
         <AuthProvider>
           <WebSocketProvider>
-            <AppRouter />
-            <OfflineIndicator />
+            <DirectCallProvider>
+              <AppRouter />
+              <IncomingCallOverlay />
+              <OfflineIndicator />
+            </DirectCallProvider>
           </WebSocketProvider>
         </AuthProvider>
       </ThemeProvider>
