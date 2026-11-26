@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronLeft, ChevronRight, Minus, Package, Plus, ShoppingCart, X } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, MessageSquare, Minus, Package, Plus, ShoppingCart, X } from 'lucide-react';
 import { Product } from '../../types/domain';
 
 interface ProductDetailModalProps {
   product: Product | null;
   onClose: () => void;
   onAddToCart: (product: Product, quantity: number) => void;
+  onContactForPrice?: (product: Product, quantity: number) => void;
 }
 
 const AVAILABILITY_META: Record<NonNullable<Product['availabilityStatus']>, { label: string; cls: string }> = {
@@ -19,6 +20,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   product,
   onClose,
   onAddToCart,
+  onContactForPrice,
 }) => {
   const [activeImageIdx, setActiveImageIdx] = useState(0);
   const [qty, setQty] = useState(1);
@@ -146,7 +148,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
             <div className="flex flex-wrap items-baseline justify-between gap-3">
               <div>
                 <p className="text-2xl font-bold text-[#082B59] dark:text-[#EAF4FF] tabular-nums">
-                  {product.currency} {product.price.toFixed(2)}
+                  {product.contactForPrice ? 'Contact for Price' : `${product.currency} ${(product.price ?? 0).toFixed(2)}`}
                 </p>
                 <p className="text-xs text-slate-500">
                   Per {product.unit || 'Unit'} · Available Stock:{' '}
@@ -216,19 +218,33 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                 </button>
               </div>
 
-              <button
-                type="button"
-                disabled={!canOrder}
-                onClick={handleAdd}
-                className="flex-1 min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#1178B9] hover:bg-[#0D6096] disabled:opacity-50 text-white text-sm font-semibold"
-              >
-                {addedFeedback ? <Check className="w-4 h-4" /> : <ShoppingCart className="w-4 h-4" />}
-                {addedFeedback
-                  ? 'Added to Shopping Cart'
-                  : canOrder
-                  ? `Add to Cart · ${product.currency} ${(product.price * qty).toFixed(2)}`
-                  : 'Out of Stock'}
-              </button>
+              {product.contactForPrice ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onContactForPrice?.(product, qty);
+                  }}
+                  className="flex-1 min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#082B59] hover:bg-[#1178B9] text-white text-sm font-semibold"
+                >
+                  <MessageSquare className="w-4 h-4" />
+                  Contact for Price
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={!canOrder}
+                  onClick={handleAdd}
+                  className="flex-1 min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#1178B9] hover:bg-[#0D6096] disabled:opacity-50 text-white text-sm font-semibold"
+                >
+                  {addedFeedback ? <Check className="w-4 h-4" /> : <ShoppingCart className="w-4 h-4" />}
+                  {addedFeedback
+                    ? 'Added to Shopping Cart'
+                    : canOrder
+                    ? `Add to Cart · ${product.currency} ${((product.price ?? 0) * qty).toFixed(2)}`
+                    : 'Out of Stock'}
+                </button>
+              )}
             </div>
           </div>
         </div>

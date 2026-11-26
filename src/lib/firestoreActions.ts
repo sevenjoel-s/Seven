@@ -13,6 +13,7 @@ import { db, handleFirestoreError, OperationType } from './firebase';
 import { hasPermission } from './rbac';
 import {
   AuditLog,
+  BroadcastChannel,
   CallRecord,
   CustomerOrder,
   DeliveryAddress,
@@ -20,6 +21,7 @@ import {
   NotificationItem,
   OrderItem,
   OrderStatus,
+  ProductBroadcastReport,
   ShoppingCartItem,
   SupportAgentInfo,
   SyncRecord,
@@ -73,6 +75,167 @@ export async function createNotification(
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, 'notifications');
   }
+}
+
+export async function triggerLocalDeviceNotification(title: string, body: string) {
+  if (typeof window === 'undefined' || typeof Notification === 'undefined') return;
+  if (Notification.permission !== 'granted') return;
+  const icon = '/assets/aistudio/seven_sunday_app_icon_crcle-removebg-preview_d14ccd7b.png';
+  try {
+    if ('serviceWorker' in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg && typeof reg.showNotification === 'function') {
+        await reg.showNotification(title, { body, icon });
+        return;
+      }
+    }
+    new Notification(title, { body, icon });
+  } catch {
+    // Ignore restricted iframe notification blocking
+  }
+}
+
+export async function notifyAllUsersOfNewProduct(params: {
+  actor: Pick<UserAccount, 'uid' | 'email' | 'role'>;
+  token: string | null;
+  product: {
+    id: string;
+    name: string;
+    sku: string;
+    category: string;
+    price: number;
+    contactForPrice?: boolean;
+    currency: string;
+    unit?: string;
+    description?: string;
+    imageUrl?: string;
+  };
+  users: UserAccount[];
+  channels: BroadcastChannel[];
+  extraTelegramChatId?: string;
+  customMessage?: string;
+  productUrl?: string;
+}): Promise<ProductBroadcastReport> {
+  const activeUsersMap = new Map<string, { uid: string; fullName: string; email?: string; phone?: string }>();
+  params.users
+    .filter((u) => u.status === 'active')
+    .forEach((u) => {
+      activeUsersMap.set(u.uid, {
+        uid: u.uid,
+        fullName: u.fullName || 'User',
+        ...(u.email ? { email: u.email } : {}),
+        ...(u.phone ? { phone: u.phone } : {}),
+      });
+    });
+
+  // Fallback for non-admin product publishers who don't have full `users` list access
+  if (activeUsersMap.size === 0) {
+    try {
+      const custSnap = await getDocs(collection(db, 'customerDirectory'));
+      custSnap.docs.forEach((d) => {
+        const data = d.data() as { uid?: string; displayName?: string };
+        const uid = data.uid || d.id;
+        if (!activeUsersMap.has(uid)) {
+          activeUsersMap.set(uid, { uid, fullName: data.displayName || 'Customer' });
+        }
+      });
+    } catch {
+      // Non-fatal fallback
+    }
+  }
+
+  const recipients = Array.from(activeUsersMap.values());
+  const priceLabel = params.product.contactForPrice
+    ? 'Contact for Price'
+    : `${params.product.currency} ${Number(params.product.price || 0).toFixed(2)}${params.product.unit ? ` / ${params.product.unit}` : ''}`;
+
+  const notifTitle = `New Product: ${params.product.name}`.slice(0, 140);
+  const notifBody = `${params.product.category} (${params.product.sku}) · ${priceLabel}${params.customMessage?.trim() ? ` — ${params.customMessage.trim()}` : ''}`.slice(0, 500);
+
+  let inAppSaved = 0;
+  if (params.channels.includes('in_app') && recipients.length > 0) {
+    const now = new Date().toISOString();
+    const chunkSize = 400;
+    for (let i = 0; i < recipients.length; i += chunkSize) {
+      const chunk = recipients.slice(i, i + chunkSize);
+      const batch = writeBatch(db);
+      chunk.forEach((rec) => {
+        const ref = doc(collection(db, 'notifications'));
+        batch.set(ref, {
+          targetUid: rec.uid,
+          type: 'product',
+          title: notifTitle,
+          body: notifBody,
+          linkTab: 'products',
+          linkId: params.product.id.slice(0, 128),
+          read: false,
+          createdAt: now,
+        });
+      });
+      await batch.commit();
+      inAppSaved += chunk.length;
+    }
+  }
+
+  const emptyOutcome = {
+    requested: false,
+    configured: false,
+    attempted: 0,
+    delivered: 0,
+    failed: 0,
+  };
+
+  let channelsReport: ProductBroadcastReport['channels'] = {
+    email: { ...emptyOutcome },
+    sms: { ...emptyOutcome },
+    whatsapp: { ...emptyOutcome },
+    telegram: { ...emptyOutcome },
+    websocket: { ...emptyOutcome },
+  };
+
+  if (params.token) {
+    try {
+      const origin = typeof window !== 'undefined' ? window.location.origin : '';
+      const resp = await fetch('/api/notifications/broadcast-product', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${params.token}`,
+        },
+        body: JSON.stringify({
+          product: params.product,
+          productUrl: params.productUrl || (origin ? `${origin}/` : undefined),
+          channels: params.channels,
+          recipients: recipients.slice(0, 500),
+          ...(params.extraTelegramChatId?.trim() ? { extraTelegramChatId: params.extraTelegramChatId.trim() } : {}),
+          ...(params.customMessage?.trim() ? { customMessage: params.customMessage.trim() } : {}),
+        }),
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as { channels?: ProductBroadcastReport['channels'] };
+        if (data.channels) {
+          channelsReport = data.channels;
+        }
+      }
+    } catch {
+      // Preserve in-app persistence even if backend network request is offline
+    }
+  }
+
+  await logAuditEvent(
+    params.actor,
+    'NEW_PRODUCT_NOTIFICATION_BROADCAST',
+    'product',
+    params.product.id || params.product.sku,
+    `Broadcasted ${params.product.name} (${params.product.sku}) via [${params.channels.join(', ')}] to ${recipients.length} user(s); ${inAppSaved} in-app alerts saved.`,
+    'info'
+  );
+
+  return {
+    inAppSaved,
+    totalRecipients: recipients.length,
+    channels: channelsReport,
+  };
 }
 
 export async function recordSyncCheckpoint(

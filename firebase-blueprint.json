@@ -245,6 +245,7 @@
         "unit": { "type": "string", "maxLength": 40 },
         "specifications": { "type": "array", "maxLength": 40 },
         "price": { "type": "number" },
+        "contactForPrice": { "type": "boolean" },
         "currency": { "type": "string", "maxLength": 8 },
         "stock": { "type": "number" },
         "availabilityStatus": { "type": "string", "enum": ["in_stock", "low_stock", "out_of_stock", "preorder"] },
@@ -257,7 +258,7 @@
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["name", "sku", "category", "price", "currency", "stock", "active", "createdBy", "createdAt", "updatedAt"]
+      "required": ["name", "sku", "category", "currency", "stock", "active", "createdBy", "createdAt", "updatedAt"]
     },
     "ShoppingCart": {
       "title": "ShoppingCart",
@@ -396,7 +397,7 @@
       "type": "object",
       "properties": {
         "targetUid": { "type": "string", "maxLength": 128 },
-        "type": { "type": "string", "enum": ["meeting", "message", "order", "support", "security", "system", "call"] },
+        "type": { "type": "string", "enum": ["meeting", "message", "order", "support", "security", "system", "call", "product"] },
         "title": { "type": "string", "maxLength": 140 },
         "body": { "type": "string", "maxLength": 500 },
         "linkTab": { "type": "string", "maxLength": 64 },

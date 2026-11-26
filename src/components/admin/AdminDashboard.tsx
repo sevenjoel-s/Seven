@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { addDoc, collection, deleteDoc, doc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore';
 import {
   Banknote,
+  Bell,
   Building2,
   Check,
   Database,
@@ -10,12 +11,13 @@ import {
   Eye,
   FolderPlus,
   ImagePlus,
-  LogOut,
+  Mail,
   MessageSquare,
   Package,
   Phone,
   PhoneCall,
   Plus,
+  Send,
   Shield,
   ShoppingCart,
   Trash2,
@@ -41,6 +43,7 @@ import {
   createNotification,
   loadOptionalDemoData,
   logAuditEvent,
+  notifyAllUsersOfNewProduct,
   processOrderStatusWithAudit,
   recordManualTransaction,
   removeOptionalDemoData,
@@ -51,6 +54,7 @@ import { hasPermission, ROLE_LABELS, ROLE_MATRIX } from '../../lib/rbac';
 import {
   AccountStatus,
   AuditLog,
+  BroadcastChannel,
   CustomerFeedback,
   CustomerOrder,
   Department,
@@ -59,6 +63,7 @@ import {
   ModerationReport,
   Product,
   ProductAvailabilityStatus,
+  ProductBroadcastReport,
   ProductCategory,
   ProductSpecification,
   RoleDefinition,
@@ -90,7 +95,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   showDemoData = false,
   onOpenCustomerChat,
 }) => {
-  const { profile, getToken, updateAvailability, logout } = useAuth();
+  const { profile, getToken, updateAvailability } = useAuth();
   const { phase: callPhase, startCall } = useDirectCall();
   const [tab, setTab] = useState<
     'users' | 'customers' | 'departments' | 'roles' | 'catalog' | 'orders' | 'calls' | 'finance' | 'security'
@@ -130,6 +135,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [prodCategory, setProdCategory] = useState('Hardware');
   const [prodUnit, setProdUnit] = useState('Piece');
   const [prodPrice, setProdPrice] = useState('4500');
+  const [prodContactForPrice, setProdContactForPrice] = useState(false);
   const [prodStock, setProdStock] = useState('25');
   const [prodAvail, setProdAvail] = useState<ProductAvailabilityStatus>('in_stock');
   const [prodImageUrl, setProdImageUrl] = useState('');
@@ -140,6 +146,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [prodDesc, setProdDesc] = useState('');
   const [prodUploading, setProdUploading] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [notifyUsersOnSave, setNotifyUsersOnSave] = useState(true);
+  const [notifyChannels, setNotifyChannels] = useState<BroadcastChannel[]>([
+    'in_app',
+    'push',
+    'email',
+    'sms',
+    'whatsapp',
+    'telegram',
+  ]);
+  const [notifyCustomMsg, setNotifyCustomMsg] = useState('');
+  const [notifyTelegramTarget, setNotifyTelegramTarget] = useState('');
+  const [broadcastingProductId, setBroadcastingProductId] = useState<string | null>(null);
+  const [broadcastReport, setBroadcastReport] = useState<{
+    productName: string;
+    sku: string;
+    report: ProductBroadcastReport;
+  } | null>(null);
 
   // Customer management search & drilldown
   const [custSearch, setCustSearch] = useState('');
@@ -564,6 +587,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
+  const toggleNotifyChannel = (ch: BroadcastChannel) => {
+    setNotifyChannels((prev) => (prev.includes(ch) ? prev.filter((item) => item !== ch) : [...prev, ch]));
+  };
+
   const resetProductForm = () => {
     setEditingProduct(null);
     setProdName('');
@@ -571,6 +598,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setProdCategory(productCategories[0]?.name || 'Hardware');
     setProdUnit('Piece');
     setProdPrice('4500');
+    setProdContactForPrice(false);
     setProdStock('25');
     setProdAvail('in_stock');
     setProdImageUrl('');
@@ -579,6 +607,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setSpecKey('');
     setSpecVal('');
     setProdDesc('');
+    setNotifyUsersOnSave(true);
+    setNotifyCustomMsg('');
   };
 
   const startEditProduct = (p: Product) => {
@@ -587,7 +617,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setProdSku(p.sku);
     setProdCategory(p.category);
     setProdUnit(p.unit || 'Piece');
-    setProdPrice(String(p.price));
+    setProdContactForPrice(Boolean(p.contactForPrice));
+    setProdPrice(p.contactForPrice ? '' : String(p.price ?? 0));
     setProdStock(String(p.stock));
     setProdAvail(
       p.availabilityStatus || (p.stock <= 0 ? 'out_of_stock' : p.stock <= 5 ? 'low_stock' : 'in_stock')
@@ -596,6 +627,39 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setProdGallery(p.galleryImages || []);
     setProdSpecs(p.specifications || []);
     setProdDesc(p.description || '');
+    setNotifyUsersOnSave(false);
+  };
+
+  const broadcastProductAlert = async (prod: {
+    id: string;
+    name: string;
+    sku: string;
+    category: string;
+    price: number;
+    contactForPrice?: boolean;
+    currency: string;
+    unit?: string;
+    description?: string;
+    imageUrl?: string;
+  }) => {
+    if (!profile) return null;
+    setBroadcastingProductId(prod.id);
+    try {
+      const token = await getToken();
+      const report = await notifyAllUsersOfNewProduct({
+        actor: profile,
+        token,
+        product: prod,
+        users,
+        channels: notifyChannels.length > 0 ? notifyChannels : ['in_app', 'push', 'email', 'sms'],
+        extraTelegramChatId: notifyTelegramTarget,
+        customMessage: notifyCustomMsg,
+      });
+      setBroadcastReport({ productName: prod.name, sku: prod.sku, report });
+      return report;
+    } finally {
+      setBroadcastingProductId(null);
+    }
   };
 
   const handleSaveProduct = async (e: React.FormEvent) => {
@@ -608,9 +672,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       return;
     }
     if (!prodName.trim() || !prodSku.trim()) return;
-    const parsedPrice = Number(prodPrice);
+    const isContactPrice = prodContactForPrice || prodPrice.trim() === '';
+    const parsedPrice = isContactPrice ? 0 : Number(prodPrice);
     const parsedStock = Number(prodStock);
-    if (Number.isNaN(parsedPrice) || parsedPrice < 0 || Number.isNaN(parsedStock) || parsedStock < 0) {
+    if ((!isContactPrice && (Number.isNaN(parsedPrice) || parsedPrice < 0)) || Number.isNaN(parsedStock) || parsedStock < 0) {
       setErrorMsg('Product price and stock must be valid non-negative numbers.');
       return;
     }
@@ -625,6 +690,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       unit: prodUnit.trim().slice(0, 40) || 'Piece',
       specifications: prodSpecs.slice(0, 40),
       price: parsedPrice,
+      contactForPrice: isContactPrice,
       currency: 'ETB',
       stock: parsedStock,
       availabilityStatus: prodAvail,
@@ -640,11 +706,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     if (editingProduct) {
       await setDoc(doc(db, 'products', editingProduct.id), payload, { merge: true });
       await logAuditEvent(profile, 'PRODUCT_UPDATED', 'product', editingProduct.id, `Updated ${payload.name} (${payload.sku})`);
-      setNotice(`Updated ${payload.name}.`);
+      if (notifyUsersOnSave && notifyChannels.length > 0) {
+        const rep = await broadcastProductAlert({ id: editingProduct.id, ...payload });
+        setNotice(
+          `Updated ${payload.name} and notified ${rep?.inAppSaved ?? 0} user(s) across selected channels.`
+        );
+      } else {
+        setNotice(`Updated ${payload.name}.`);
+      }
     } else {
-      await addDoc(collection(db, 'products'), payload);
-      await logAuditEvent(profile, 'PRODUCT_CREATED', 'product', payload.sku, payload.name);
-      setNotice('Product published to 7Sunday Ethiopia catalog.');
+      const docRef = await addDoc(collection(db, 'products'), payload);
+      await logAuditEvent(profile, 'PRODUCT_CREATED', 'product', docRef.id || payload.sku, payload.name);
+      if (notifyUsersOnSave && notifyChannels.length > 0) {
+        const rep = await broadcastProductAlert({ id: docRef.id, ...payload });
+        setNotice(
+          `Product published and notifications dispatched (${rep?.inAppSaved ?? 0} in-app alerts saved across ${rep?.totalRecipients ?? 0} active user(s)).`
+        );
+      } else {
+        setNotice('Product published to 7Sunday Ethiopia catalog.');
+      }
     }
     resetProductForm();
   };
@@ -782,14 +862,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <span>{label}</span>
           </button>
         ))}
-        <button
-          type="button"
-          onClick={logout}
-          className="ml-auto min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-950/50 text-xs font-medium text-red-700 dark:text-red-300 transition-colors whitespace-nowrap shrink-0"
-        >
-          <LogOut className="w-3.5 h-3.5" />
-          <span>Log Out</span>
-        </button>
       </div>
 
       {/* 1. USERS & INVITES */}
@@ -1313,10 +1385,59 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-2">
-                <input type="number" min={0} step="0.01" required value={prodPrice} onChange={(e) => setProdPrice(e.target.value)} placeholder="Price (ETB) *" className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
-                <input type="number" min={0} required value={prodStock} onChange={(e) => setProdStock(e.target.value)} placeholder="Stock *" className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
-                <input type="text" required value={prodUnit} onChange={(e) => setProdUnit(e.target.value)} placeholder="Unit (Piece, Box...)" className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium text-slate-500">Pricing Option</span>
+                  <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 p-0.5 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProdContactForPrice(false);
+                        if (!prodPrice) setProdPrice('0');
+                      }}
+                      className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                        !prodContactForPrice
+                          ? 'bg-[#082B59] text-white'
+                          : 'text-[#293858] dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      Fixed Price
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProdContactForPrice(true);
+                        setProdPrice('');
+                      }}
+                      className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                        prodContactForPrice
+                          ? 'bg-[#1178B9] text-white'
+                          : 'text-[#293858] dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      Contact for Price
+                    </button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {prodContactForPrice ? (
+                    <div className="min-h-[40px] rounded-lg border border-[#1178B9]/40 bg-[#EAF4FF] dark:bg-[#082B59]/40 px-3 py-2 text-[11px] font-semibold text-[#082B59] dark:text-[#EAF4FF] flex items-center">
+                      Contact for Price
+                    </div>
+                  ) : (
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={prodPrice}
+                      onChange={(e) => setProdPrice(e.target.value)}
+                      placeholder="Price (ETB, optional)"
+                      className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs"
+                    />
+                  )}
+                  <input type="number" min={0} required value={prodStock} onChange={(e) => setProdStock(e.target.value)} placeholder="Stock *" className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
+                  <input type="text" required value={prodUnit} onChange={(e) => setProdUnit(e.target.value)} placeholder="Unit (Piece, Box...)" className="min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
+                </div>
               </div>
 
               <div>
@@ -1420,12 +1541,147 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
 
               <textarea rows={3} value={prodDesc} onChange={(e) => setProdDesc(e.target.value)} placeholder="Detailed product description..." className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs" />
+
+              {/* Multi-Channel User Notification Broadcast Settings */}
+              <div className="rounded-xl border border-[#1178B9]/30 bg-[#EAF4FF]/60 dark:bg-[#082B59]/25 p-3.5 space-y-2.5 text-xs">
+                <label className="flex items-center justify-between gap-2 font-semibold text-[#082B59] dark:text-[#EAF4FF] cursor-pointer">
+                  <span className="inline-flex items-center gap-1.5">
+                    <Bell className="w-3.5 h-3.5 text-[#1178B9]" />
+                    Notify All Active Users on Publish ({users.filter((u) => u.status === 'active').length})
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={notifyUsersOnSave}
+                    onChange={(e) => setNotifyUsersOnSave(e.target.checked)}
+                    className="rounded border-slate-300 text-[#1178B9]"
+                  />
+                </label>
+
+                {notifyUsersOnSave && (
+                  <div className="space-y-2 pt-1">
+                    <div className="flex flex-wrap gap-1.5">
+                      {(
+                        [
+                          { id: 'in_app', label: 'In-App Alerts' },
+                          { id: 'push', label: 'Live Push / Browser' },
+                          { id: 'email', label: 'Email' },
+                          { id: 'sms', label: 'Text (SMS)' },
+                          { id: 'whatsapp', label: 'WhatsApp' },
+                          { id: 'telegram', label: 'Telegram' },
+                        ] as const
+                      ).map(({ id, label }) => {
+                        const selected = notifyChannels.includes(id);
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => toggleNotifyChannel(id)}
+                            aria-pressed={selected}
+                            className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors ${
+                              selected
+                                ? 'bg-[#082B59] text-white border-[#082B59]'
+                                : 'bg-white dark:bg-slate-900 text-[#293858] dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                            }`}
+                          >
+                            {selected ? '✓ ' : ''}
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <input
+                      type="text"
+                      value={notifyCustomMsg}
+                      onChange={(e) => setNotifyCustomMsg(e.target.value)}
+                      placeholder="Optional launch note for email / text / push..."
+                      className="w-full min-h-[34px] rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1 text-[11px]"
+                    />
+                    {notifyChannels.includes('telegram') && (
+                      <input
+                        type="text"
+                        value={notifyTelegramTarget}
+                        onChange={(e) => setNotifyTelegramTarget(e.target.value)}
+                        placeholder="Optional Telegram Chat or @Channel ID"
+                        className="w-full min-h-[34px] rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1 text-[11px]"
+                      />
+                    )}
+                    <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                      Audience ready: {users.filter((u) => u.status === 'active' && u.email).length} emails ·{' '}
+                      {users.filter((u) => u.status === 'active' && u.phone).length} phone numbers
+                    </p>
+                  </div>
+                )}
+              </div>
+
               <button type="submit" className="w-full min-h-[42px] rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white py-2 text-xs font-semibold">
                 {editingProduct ? 'Save Product Changes' : 'Publish Product'}
               </button>
             </form>
 
             <div className="lg:col-span-7 space-y-4">
+              {broadcastReport && (
+                <div className="rounded-xl border border-[#1178B9]/40 bg-[#EAF4FF]/70 dark:bg-[#082B59]/40 p-4 space-y-3 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <p className="font-bold text-[#082B59] dark:text-[#EAF4FF]">
+                        Notification Broadcast Summary — {broadcastReport.productName} ({broadcastReport.sku})
+                      </p>
+                      <p className="text-[11px] text-[#293858] dark:text-slate-300">
+                        In-App Alerts Saved: <strong>{broadcastReport.report.inAppSaved}</strong> · Live WebSocket Recipients:{' '}
+                        <strong>{broadcastReport.report.channels.websocket.delivered}</strong>
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setBroadcastReport(null)}
+                      aria-label="Close broadcast summary"
+                      className="p-1 rounded hover:bg-white/60 dark:hover:bg-slate-800"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {(
+                      [
+                        { key: 'email', label: 'Email', action: 'Open Email Draft' },
+                        { key: 'sms', label: 'Text (SMS)', action: 'Open SMS App' },
+                        { key: 'whatsapp', label: 'WhatsApp', action: 'Share WhatsApp' },
+                        { key: 'telegram', label: 'Telegram', action: 'Share Telegram' },
+                      ] as const
+                    ).map(({ key, label, action }) => {
+                      const info = broadcastReport.report.channels[key];
+                      if (!info.requested) return null;
+                      return (
+                        <div
+                          key={key}
+                          className="rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 p-2.5 space-y-1"
+                        >
+                          <p className="font-semibold text-[#15243A] dark:text-slate-100">{label}</p>
+                          <p className="text-[11px] text-slate-500">
+                            {info.configured
+                              ? `Sent: ${info.delivered}/${info.attempted}`
+                              : info.attempted > 0
+                              ? `${info.attempted} ready (fallback)`
+                              : 'Ready to launch'}
+                          </p>
+                          {info.fallbackUrl && (
+                            <a
+                              href={info.fallbackUrl}
+                              target={info.fallbackUrl.startsWith('https://') ? '_blank' : undefined}
+                              rel={info.fallbackUrl.startsWith('https://') ? 'noopener noreferrer' : undefined}
+                              className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#1178B9] hover:underline"
+                            >
+                              <Send className="w-3 h-3" /> {action}
+                            </a>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <SearchFilterSortBar
                 search={prodSearch}
                 onSearchChange={setProdSearch}
@@ -1477,11 +1733,42 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             )}
                           </p>
                           <p className="text-slate-500 tabular-nums">
-                            {p.category} · {p.currency} {p.price.toFixed(2)} / {p.unit || 'Unit'} · Stock: {p.stock}
+                            {p.category} ·{' '}
+                            {p.contactForPrice ? (
+                              <span className="font-semibold text-[#1178B9]">Contact for Price</span>
+                            ) : (
+                              `${p.currency} ${(p.price ?? 0).toFixed(2)}`
+                            )}{' '}
+                            / {p.unit || 'Unit'} · Stock: {p.stock}
                           </p>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={broadcastingProductId === p.id}
+                          onClick={async () => {
+                            const rep = await broadcastProductAlert({
+                              id: p.id,
+                              name: p.name,
+                              sku: p.sku,
+                              category: p.category,
+                              price: p.price ?? 0,
+                              contactForPrice: p.contactForPrice,
+                              currency: p.currency,
+                              unit: p.unit,
+                              description: p.description,
+                              imageUrl: p.imageUrl,
+                            });
+                            if (rep) {
+                              setNotice(`Sent product announcement for ${p.name} to ${rep.inAppSaved} app user(s).`);
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded bg-[#EAF4FF] hover:bg-[#1178B9] hover:text-white text-[#082B59] font-medium disabled:opacity-50"
+                        >
+                          <Mail className="w-3.5 h-3.5" />
+                          {broadcastingProductId === p.id ? 'Sending...' : 'Notify Users'}
+                        </button>
                         <button
                           type="button"
                           onClick={() => startEditProduct(p)}

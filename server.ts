@@ -98,6 +98,16 @@ export type TokenVerifier = (token: string) => Promise<DecodedIdToken>;
 interface AppOptions {
   authVerifier?: TokenVerifier;
   uploadDir?: string;
+  broadcastAll?: (payload: unknown) => number;
+}
+
+function escapeHtml(raw: string): string {
+  return raw
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export function createApp(options: AppOptions = {}) {
@@ -167,7 +177,7 @@ export function createApp(options: AppOptions = {}) {
       telegramBot: Boolean(process.env.TELEGRAM_BOT_TOKEN),
       whatsappCloud: Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID),
       twilioSms: Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER),
-      emailWebhook: Boolean(process.env.SMTP_WEBHOOK_URL),
+      emailWebhook: Boolean(process.env.SMTP_WEBHOOK_URL || process.env.RESEND_API_KEY),
       turnConfigured: Boolean(process.env.TURN_URL || process.env.TURN_URLS),
       appUrl: process.env.APP_URL || '',
     });
@@ -392,6 +402,343 @@ export function createApp(options: AppOptions = {}) {
     }
   });
 
+  // Real multi-channel New Product Notification Broadcast (Email, SMS Text, WhatsApp, Telegram & WebSocket/Push)
+  app.post('/api/notifications/broadcast-product', requireAuth, async (req: AuthRequest, res: Response) => {
+    const body = req.body || {};
+    const rawProduct = body.product;
+    if (!rawProduct || typeof rawProduct !== 'object') {
+      return res.status(400).json({ error: 'Product payload is required.' });
+    }
+
+    const name = typeof rawProduct.name === 'string' ? rawProduct.name.trim().slice(0, 160) : '';
+    const sku = typeof rawProduct.sku === 'string' ? rawProduct.sku.trim().slice(0, 64) : '';
+    const category = typeof rawProduct.category === 'string' ? rawProduct.category.trim().slice(0, 80) : 'Catalog';
+    const description = typeof rawProduct.description === 'string' ? rawProduct.description.trim().slice(0, 500) : '';
+    const unit = typeof rawProduct.unit === 'string' ? rawProduct.unit.trim().slice(0, 40) : 'Unit';
+    const currency = typeof rawProduct.currency === 'string' ? rawProduct.currency.trim().slice(0, 8) : 'ETB';
+    const contactForPrice = Boolean(rawProduct.contactForPrice);
+    const price = typeof rawProduct.price === 'number' && Number.isFinite(rawProduct.price) && rawProduct.price >= 0 ? rawProduct.price : 0;
+    const productId = typeof rawProduct.id === 'string' ? rawProduct.id.trim().slice(0, 128) : '';
+
+    if (!name || !sku) {
+      return res.status(400).json({ error: 'Product name and SKU are required.' });
+    }
+
+    const productUrlRaw = typeof body.productUrl === 'string' ? body.productUrl.trim() : '';
+    if (productUrlRaw && !/^(https?:\/\/)/i.test(productUrlRaw)) {
+      return res.status(400).json({ error: 'Invalid product URL scheme.' });
+    }
+    const productUrl = productUrlRaw || process.env.APP_URL || '';
+
+    const allowedChannels = new Set(['in_app', 'push', 'email', 'sms', 'whatsapp', 'telegram']);
+    const requestedChannels = new Set(
+      Array.isArray(body.channels)
+        ? body.channels.filter((c: unknown): c is string => typeof c === 'string' && allowedChannels.has(c)).slice(0, 8)
+        : ['in_app', 'push', 'email', 'sms']
+    );
+
+    interface BroadcastRecipient {
+      uid: string;
+      fullName: string;
+      email?: string;
+      phone?: string;
+      telegramChatId?: string;
+    }
+
+    const recipientsRaw = Array.isArray(body.recipients) ? body.recipients.slice(0, 500) : [];
+    const recipients: BroadcastRecipient[] = [];
+    const seenUids = new Set<string>();
+    for (const r of recipientsRaw) {
+      if (!r || typeof r !== 'object') continue;
+      const uid = typeof r.uid === 'string' ? r.uid.trim().slice(0, 128) : '';
+      if (!uid || seenUids.has(uid)) continue;
+      seenUids.add(uid);
+      const fullName = typeof r.fullName === 'string' && r.fullName.trim() ? r.fullName.trim().slice(0, 120) : 'Customer';
+      const email = typeof r.email === 'string' ? r.email.trim().slice(0, 200) : '';
+      const phone = typeof r.phone === 'string' ? r.phone.trim().slice(0, 40) : '';
+      const telegramChatId = typeof r.telegramChatId === 'string' ? r.telegramChatId.trim().slice(0, 64) : '';
+      recipients.push({
+        uid,
+        fullName,
+        ...(email ? { email } : {}),
+        ...(phone ? { phone } : {}),
+        ...(telegramChatId ? { telegramChatId } : {}),
+      });
+    }
+
+    const validEmails = Array.from(
+      new Set(
+        recipients
+          .map((r) => r.email || '')
+          .filter((e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
+      )
+    );
+    const validPhones = Array.from(
+      new Set(
+        recipients
+          .map((r) => (r.phone || '').replace(/[^0-9+]/g, ''))
+          .filter((p) => p.replace(/\D/g, '').length >= 6)
+      )
+    );
+
+    const extraTg = typeof body.extraTelegramChatId === 'string' ? body.extraTelegramChatId.trim().slice(0, 64) : '';
+    const telegramTargets = Array.from(
+      new Set([
+        ...recipients.map((r) => r.telegramChatId || '').filter(Boolean),
+        ...(extraTg ? [extraTg] : []),
+        ...(process.env.TELEGRAM_CHANNEL_ID ? [process.env.TELEGRAM_CHANNEL_ID.trim()] : []),
+      ])
+    );
+
+    const priceLabel = contactForPrice ? 'Contact for Price' : `${currency} ${price.toFixed(2)} / ${unit}`;
+    const customNote = typeof body.customMessage === 'string' && body.customMessage.trim()
+      ? `\n${body.customMessage.trim().slice(0, 300)}`
+      : '';
+    const subject = `New Product Available: ${name} (${sku}) — 7Sunday Ethiopia`;
+    const plainText = [
+      `New Product Published at Seven Sunday PLC: ${name} (SKU: ${sku})`,
+      `Category: ${category} | Price: ${priceLabel}`,
+      description ? `Details: ${description}` : '',
+      customNote.trim(),
+      productUrl ? `View Product: ${productUrl}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const htmlBody = `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+        <div style="background:#082B59;color:#ffffff;padding:20px 24px;">
+          <p style="margin:0;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#EAF4FF;">Seven Sunday Manufacturing &amp; Trading PLC</p>
+          <h2 style="margin:6px 0 0;font-size:20px;">New Product Announcement</h2>
+        </div>
+        <div style="padding:24px;color:#15243A;font-size:14px;line-height:1.5;">
+          <p style="margin-top:0;"><strong>${escapeHtml(name)}</strong> (SKU: ${escapeHtml(sku)}) is now available in <strong>${escapeHtml(category)}</strong>.</p>
+          <p><strong>Pricing:</strong> ${escapeHtml(priceLabel)}</p>
+          ${description ? `<p>${escapeHtml(description)}</p>` : ''}
+          ${customNote ? `<p>${escapeHtml(customNote.trim())}</p>` : ''}
+          ${productUrl ? `<p style="margin-top:20px;"><a href="${escapeHtml(productUrl)}" style="display:inline-block;background:#1178B9;color:#ffffff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:bold;">Browse Product in 7Sunday Ethiopia</a></p>` : ''}
+        </div>
+      </div>
+    `;
+
+    // 1. Live WebSocket / Browser Push Broadcast
+    const wsWanted = requestedChannels.has('push') || requestedChannels.has('in_app');
+    const wsDelivered =
+      wsWanted && options.broadcastAll
+        ? options.broadcastAll({
+            type: 'product:published',
+            product: { id: productId, name, sku, category, price, contactForPrice, currency, unit },
+            title: `New Product: ${name}`,
+            message: `${category} · ${priceLabel}`,
+            publishedBy: req.user?.name || req.user?.email || 'Admin',
+            createdAt: new Date().toISOString(),
+          })
+        : 0;
+
+    // 2. Email Broadcast
+    const emailWanted = requestedChannels.has('email');
+    const emailConfigured = Boolean(process.env.SMTP_WEBHOOK_URL || process.env.RESEND_API_KEY);
+    let emailDelivered = 0;
+    let emailFailed = 0;
+    let emailDetail: string | undefined;
+
+    if (emailWanted && emailConfigured && validEmails.length > 0) {
+      if (process.env.SMTP_WEBHOOK_URL) {
+        const results = await Promise.allSettled(
+          validEmails.map(async (to) => {
+            const resp = await fetch(process.env.SMTP_WEBHOOK_URL!, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ to, subject, text: plainText, html: htmlBody }),
+            });
+            if (!resp.ok) throw new Error(`Webhook HTTP ${resp.status}`);
+          })
+        );
+        emailDelivered = results.filter((r) => r.status === 'fulfilled').length;
+        emailFailed = results.length - emailDelivered;
+      } else if (process.env.RESEND_API_KEY) {
+        const from = process.env.EMAIL_FROM || 'Seven Sunday Ethiopia <onboarding@resend.dev>';
+        const results = await Promise.allSettled(
+          validEmails.map(async (to) => {
+            const resp = await fetch('https://api.resend.com/emails', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ from, to: [to], subject, text: plainText, html: htmlBody }),
+            });
+            if (!resp.ok) throw new Error(`Resend HTTP ${resp.status}`);
+          })
+        );
+        emailDelivered = results.filter((r) => r.status === 'fulfilled').length;
+        emailFailed = results.length - emailDelivered;
+      }
+      emailDetail = `${emailDelivered}/${validEmails.length} email(s) sent.`;
+    }
+
+    const emailFallback =
+      emailWanted && (!emailConfigured || emailDelivered === 0) && validEmails.length > 0
+        ? `mailto:?bcc=${encodeURIComponent(validEmails.slice(0, 80).join(','))}&subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(plainText)}`
+        : emailWanted && (!emailConfigured || emailDelivered === 0)
+        ? `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(plainText)}`
+        : undefined;
+
+    // 3. SMS Text Broadcast
+    const smsWanted = requestedChannels.has('sms');
+    const smsConfigured = Boolean(
+      process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER
+    );
+    let smsDelivered = 0;
+    let smsFailed = 0;
+    let smsDetail: string | undefined;
+
+    if (smsWanted && smsConfigured && validPhones.length > 0) {
+      const authStr = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
+      const results = await Promise.allSettled(
+        validPhones.map(async (to) => {
+          const params = new URLSearchParams({
+            To: to,
+            From: process.env.TWILIO_FROM_NUMBER!,
+            Body: plainText.slice(0, 1500),
+          });
+          const resp = await fetch(
+            `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Messages.json`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Basic ${authStr}`,
+                'Content-Type': 'application/x-www-form-urlencoded',
+              },
+              body: params.toString(),
+            }
+          );
+          if (!resp.ok) throw new Error(`Twilio HTTP ${resp.status}`);
+        })
+      );
+      smsDelivered = results.filter((r) => r.status === 'fulfilled').length;
+      smsFailed = results.length - smsDelivered;
+      smsDetail = `${smsDelivered}/${validPhones.length} SMS sent.`;
+    }
+
+    const smsFallback =
+      smsWanted && (!smsConfigured || smsDelivered === 0)
+        ? `sms:${validPhones.length > 0 ? encodeURIComponent(validPhones[0]) : ''}?body=${encodeURIComponent(plainText)}`
+        : undefined;
+
+    // 4. WhatsApp Broadcast
+    const waWanted = requestedChannels.has('whatsapp');
+    const waConfigured = Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID);
+    let waDelivered = 0;
+    let waFailed = 0;
+
+    if (waWanted && waConfigured && validPhones.length > 0) {
+      const results = await Promise.allSettled(
+        validPhones.map(async (to) => {
+          const resp = await fetch(
+            `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                messaging_product: 'whatsapp',
+                to,
+                type: 'text',
+                text: { body: plainText },
+              }),
+            }
+          );
+          if (!resp.ok) throw new Error(`WhatsApp HTTP ${resp.status}`);
+        })
+      );
+      waDelivered = results.filter((r) => r.status === 'fulfilled').length;
+      waFailed = results.length - waDelivered;
+    }
+
+    const waFallback =
+      waWanted && (!waConfigured || waDelivered === 0)
+        ? `https://api.whatsapp.com/send?text=${encodeURIComponent(plainText)}`
+        : undefined;
+
+    // 5. Telegram Broadcast
+    const tgWanted = requestedChannels.has('telegram');
+    const tgConfigured = Boolean(process.env.TELEGRAM_BOT_TOKEN);
+    let tgDelivered = 0;
+    let tgFailed = 0;
+
+    if (tgWanted && tgConfigured && telegramTargets.length > 0) {
+      const results = await Promise.allSettled(
+        telegramTargets.map(async (chatId) => {
+          const resp = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, text: plainText }),
+          });
+          if (!resp.ok) throw new Error(`Telegram HTTP ${resp.status}`);
+        })
+      );
+      tgDelivered = results.filter((r) => r.status === 'fulfilled').length;
+      tgFailed = results.length - tgDelivered;
+    }
+
+    const tgFallback =
+      tgWanted && (!tgConfigured || tgDelivered === 0)
+        ? `https://t.me/share/url?url=${encodeURIComponent(productUrl || 'https://sevensundayethiopia.com')}&text=${encodeURIComponent(plainText)}`
+        : undefined;
+
+    return res.json({
+      totalRecipients: recipients.length,
+      emailsCount: validEmails.length,
+      phonesCount: validPhones.length,
+      channels: {
+        websocket: {
+          requested: wsWanted,
+          configured: true,
+          attempted: wsWanted ? 1 : 0,
+          delivered: wsDelivered,
+          failed: 0,
+        },
+        email: {
+          requested: emailWanted,
+          configured: emailConfigured,
+          attempted: emailWanted ? validEmails.length : 0,
+          delivered: emailDelivered,
+          failed: emailFailed,
+          ...(emailFallback ? { fallbackUrl: emailFallback } : {}),
+          ...(emailDetail ? { detail: emailDetail } : {}),
+        },
+        sms: {
+          requested: smsWanted,
+          configured: smsConfigured,
+          attempted: smsWanted ? validPhones.length : 0,
+          delivered: smsDelivered,
+          failed: smsFailed,
+          ...(smsFallback ? { fallbackUrl: smsFallback } : {}),
+          ...(smsDetail ? { detail: smsDetail } : {}),
+        },
+        whatsapp: {
+          requested: waWanted,
+          configured: waConfigured,
+          attempted: waWanted ? validPhones.length : 0,
+          delivered: waDelivered,
+          failed: waFailed,
+          ...(waFallback ? { fallbackUrl: waFallback } : {}),
+        },
+        telegram: {
+          requested: tgWanted,
+          configured: tgConfigured,
+          attempted: tgWanted ? telegramTargets.length : 0,
+          delivered: tgDelivered,
+          failed: tgFailed,
+          ...(tgFallback ? { fallbackUrl: tgFallback } : {}),
+        },
+      },
+    });
+  });
+
   return app;
 }
 
@@ -458,6 +805,18 @@ export function attachWebSocketServer(
     for (const [sock, client] of clientsBySocket.entries()) {
       const isStaff = client.accountType === 'employee' || (client.role ? SUPPORT_STAFF_ROLES.has(client.role) : false);
       if (sock !== excludeSocket && isStaff && sock.readyState === WebSocket.OPEN) {
+        sock.send(serialized);
+        delivered += 1;
+      }
+    }
+    return delivered;
+  }
+
+  function broadcastAll(payload: unknown): number {
+    let delivered = 0;
+    const serialized = JSON.stringify(payload);
+    for (const sock of clientsBySocket.keys()) {
+      if (sock.readyState === WebSocket.OPEN) {
         sock.send(serialized);
         delivered += 1;
       }
@@ -846,13 +1205,18 @@ export function attachWebSocketServer(
     });
   });
 
-  return wss;
+  (wss as WebSocketServer & { broadcastAll: (payload: unknown) => number }).broadcastAll = broadcastAll;
+  return wss as WebSocketServer & { broadcastAll: (payload: unknown) => number };
 }
 
 async function startServer() {
-  const app = createApp();
+  let broadcastFn: ((payload: unknown) => number) | undefined;
+  const app = createApp({
+    broadcastAll: (payload) => (broadcastFn ? broadcastFn(payload) : 0),
+  });
   const server = http.createServer(app);
-  attachWebSocketServer(server);
+  const wss = attachWebSocketServer(server);
+  broadcastFn = wss.broadcastAll;
 
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');

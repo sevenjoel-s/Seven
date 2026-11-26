@@ -166,6 +166,13 @@ export const CustomerPortal: React.FC = () => {
   const [formError, setFormError] = useState<string | null>(null);
   const [submittingOrder, setSubmittingOrder] = useState(false);
 
+  // Contact for Price inquiry modal
+  const [priceInquiryProduct, setPriceInquiryProduct] = useState<Product | null>(null);
+  const [priceInquiryQty, setPriceInquiryQty] = useState(1);
+  const [priceInquiryPhone, setPriceInquiryPhone] = useState('');
+  const [priceInquiryNote, setPriceInquiryNote] = useState('');
+  const [sendingPriceInquiry, setSendingPriceInquiry] = useState(false);
+
   useEffect(() => {
     if (profile) {
       setProfName(profile.fullName || '');
@@ -327,8 +334,8 @@ export const CustomerPortal: React.FC = () => {
         return true;
       })
       .sort((a, b) => {
-        if (prodSort === 'price_asc') return a.price - b.price;
-        if (prodSort === 'price_desc') return b.price - a.price;
+        if (prodSort === 'price_asc') return (a.price ?? 0) - (b.price ?? 0);
+        if (prodSort === 'price_desc') return (b.price ?? 0) - (a.price ?? 0);
         return a.name.localeCompare(b.name);
       });
   }, [activeCatalogProducts, catFilter, availFilter, searchTerm, prodSort]);
@@ -409,7 +416,55 @@ export const CustomerPortal: React.FC = () => {
     }
   };
 
+  const openPriceInquiry = (product: Product, quantity = 1) => {
+    const qtyVal = Math.max(1, Math.floor(quantity));
+    setPriceInquiryProduct(product);
+    setPriceInquiryQty(qtyVal);
+    setPriceInquiryPhone(profile?.phone || customerPhone || '');
+    setPriceInquiryNote(
+      `Please share pricing and availability for ${qtyVal} ${product.unit || 'unit'}(s) of ${product.name} (SKU: ${product.sku}).`
+    );
+  };
+
+  const handleSubmitPriceInquiry = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!profile || !priceInquiryProduct || !priceInquiryNote.trim()) return;
+    setSendingPriceInquiry(true);
+    setFormError(null);
+    try {
+      const now = new Date().toISOString();
+      await addDoc(collection(db, 'customerFeedback'), {
+        customerUid: profile.uid,
+        customerName: profile.fullName,
+        type: 'inquiry',
+        subject: `Price Request: ${priceInquiryProduct.name} (${priceInquiryProduct.sku})`,
+        message: `${priceInquiryNote.trim()}${priceInquiryPhone.trim() ? `\nContact Phone: ${priceInquiryPhone.trim()}` : ''}`,
+        status: 'open',
+        isDemo: false,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await logAuditEvent(
+        profile,
+        'PRICE_INQUIRY_SUBMITTED',
+        'product',
+        priceInquiryProduct.id,
+        `Requested quote for ${priceInquiryQty}x ${priceInquiryProduct.name} (${priceInquiryProduct.sku})`
+      );
+      setNotice(`Price inquiry submitted for ${priceInquiryProduct.name}. Our sales team will reply shortly.`);
+      setPriceInquiryProduct(null);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Unable to send price inquiry.');
+    } finally {
+      setSendingPriceInquiry(false);
+    }
+  };
+
   const addProductToCart = async (product: Product, quantity = 1) => {
+    if (product.contactForPrice) {
+      openPriceInquiry(product, quantity);
+      return;
+    }
     const qtyToAdd = Math.max(1, Math.floor(quantity));
     const existing = cartItemsState.find((i) => i.productId === product.id);
     const nextQty = (existing?.quantity || 0) + qtyToAdd;
@@ -417,7 +472,7 @@ export const CustomerPortal: React.FC = () => {
       productId: product.id,
       name: product.name,
       sku: product.sku,
-      unitPrice: product.price,
+      unitPrice: product.price ?? 0,
       currency: product.currency,
       ...(product.unit ? { unit: product.unit } : {}),
       ...(product.imageUrl ? { imageUrl: product.imageUrl } : {}),
@@ -971,7 +1026,7 @@ export const CustomerPortal: React.FC = () => {
                           <div className="min-w-0 flex-1 space-y-1">
                             <p className="text-xs font-semibold truncate text-[#15243A] dark:text-slate-100">{p.name}</p>
                             <p className="text-xs font-bold text-[#082B59] dark:text-[#EAF4FF] tabular-nums">
-                              {p.currency} {p.price.toFixed(2)}
+                              {p.contactForPrice ? 'Contact for Price' : `${p.currency} ${(p.price ?? 0).toFixed(2)}`}
                             </p>
                             <div className="flex items-center gap-2">
                               <button
@@ -981,14 +1036,24 @@ export const CustomerPortal: React.FC = () => {
                               >
                                 View
                               </button>
-                              <button
-                                type="button"
-                                disabled={p.stock <= 0 && p.availabilityStatus !== 'preorder'}
-                                onClick={() => addProductToCart(p, 1)}
-                                className="text-[11px] font-medium px-2 py-0.5 rounded bg-[#1178B9] text-white disabled:opacity-40"
-                              >
-                                + Cart
-                              </button>
+                              {p.contactForPrice ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openPriceInquiry(p, 1)}
+                                  className="text-[11px] font-medium px-2 py-0.5 rounded bg-[#082B59] hover:bg-[#1178B9] text-white"
+                                >
+                                  Contact for Price
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={p.stock <= 0 && p.availabilityStatus !== 'preorder'}
+                                  onClick={() => addProductToCart(p, 1)}
+                                  className="text-[11px] font-medium px-2 py-0.5 rounded bg-[#1178B9] text-white disabled:opacity-40"
+                                >
+                                  + Cart
+                                </button>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -1118,10 +1183,18 @@ export const CustomerPortal: React.FC = () => {
                         <div className="px-4 py-3 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
                           <div className="flex items-center justify-between">
                             <div>
-                              <span className="text-base font-bold text-[#082B59] dark:text-[#EAF4FF] tabular-nums">
-                                {p.currency} {p.price.toFixed(2)}
-                              </span>
-                              <span className="text-[11px] text-slate-400"> / {p.unit || 'Unit'}</span>
+                              {p.contactForPrice ? (
+                                <span className="inline-block px-2 py-0.5 rounded bg-[#EAF4FF] dark:bg-[#082B59]/50 text-xs font-bold text-[#082B59] dark:text-[#EAF4FF]">
+                                  Contact for Price
+                                </span>
+                              ) : (
+                                <>
+                                  <span className="text-base font-bold text-[#082B59] dark:text-[#EAF4FF] tabular-nums">
+                                    {p.currency} {(p.price ?? 0).toFixed(2)}
+                                  </span>
+                                  <span className="text-[11px] text-slate-400"> / {p.unit || 'Unit'}</span>
+                                </>
+                              )}
                             </div>
                             <button
                               type="button"
@@ -1147,15 +1220,26 @@ export const CustomerPortal: React.FC = () => {
                               aria-label={`Quantity for ${p.name}`}
                               className="w-16 min-h-[38px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-2 text-center text-xs font-semibold tabular-nums"
                             />
-                            <button
-                              type="button"
-                              disabled={!canBuy}
-                              onClick={() => addProductToCart(p, q)}
-                              className="flex-1 min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] disabled:opacity-50 text-white text-xs font-semibold"
-                            >
-                              <ShoppingCart className="w-3.5 h-3.5" />
-                              {canBuy ? 'Add to Cart' : 'Out of Stock'}
-                            </button>
+                            {p.contactForPrice ? (
+                              <button
+                                type="button"
+                                onClick={() => openPriceInquiry(p, q)}
+                                className="flex-1 min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#082B59] hover:bg-[#1178B9] text-white text-xs font-semibold"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" />
+                                Contact for Price
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={!canBuy}
+                                onClick={() => addProductToCart(p, q)}
+                                className="flex-1 min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] disabled:opacity-50 text-white text-xs font-semibold"
+                              >
+                                <ShoppingCart className="w-3.5 h-3.5" />
+                                {canBuy ? 'Add to Cart' : 'Out of Stock'}
+                              </button>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1988,7 +2072,150 @@ export const CustomerPortal: React.FC = () => {
         product={detailProduct}
         onClose={() => setDetailProduct(null)}
         onAddToCart={addProductToCart}
+        onContactForPrice={(prod, qty) => openPriceInquiry(prod, qty)}
       />
+
+      {/* Contact for Price / Request Quote Modal */}
+      {priceInquiryProduct && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Contact for Price: ${priceInquiryProduct.name}`}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#082B59]/70 p-4 overflow-y-auto"
+        >
+          <div className="w-full max-w-lg rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl overflow-hidden my-auto">
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-[#1178B9]">Contact for Price</p>
+                <h3 className="text-base font-bold text-[#15243A] dark:text-slate-100 truncate">
+                  {priceInquiryProduct.name} ({priceInquiryProduct.sku})
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPriceInquiryProduct(null)}
+                aria-label="Close price inquiry"
+                className="min-h-[40px] min-w-[40px] inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitPriceInquiry} className="p-5 space-y-4 text-xs">
+              <div className="flex items-center gap-3 p-3 rounded-xl bg-[#F5F8FC] dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                <img
+                  src={priceInquiryProduct.imageUrl || '/assets/aistudio/seven_sunday_app_icon_crcle-removebg-preview_d14ccd7b.png'}
+                  alt={priceInquiryProduct.name}
+                  referrerPolicy="no-referrer"
+                  className="w-12 h-12 rounded-lg object-cover bg-white shrink-0"
+                />
+                <div className="min-w-0">
+                  <p className="font-semibold text-[#15243A] dark:text-slate-100 truncate">{priceInquiryProduct.name}</p>
+                  <p className="text-slate-500">
+                    {priceInquiryProduct.category} · Requested Qty: <strong className="tabular-nums">{priceInquiryQty}</strong>{' '}
+                    {priceInquiryProduct.unit || 'units'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">Quantity Needed</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={priceInquiryQty}
+                    onChange={(e) => setPriceInquiryQty(Math.max(1, Number(e.target.value) || 1))}
+                    className="w-full min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">Contact Phone Number</label>
+                  <input
+                    type="tel"
+                    value={priceInquiryPhone}
+                    onChange={(e) => setPriceInquiryPhone(e.target.value)}
+                    placeholder="+251 9..."
+                    className="w-full min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-slate-500 mb-1">Inquiry / Quote Message *</label>
+                <textarea
+                  rows={3}
+                  required
+                  value={priceInquiryNote}
+                  onChange={(e) => setPriceInquiryNote(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-xs"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={sendingPriceInquiry}
+                className="w-full min-h-[42px] rounded-xl bg-[#1178B9] hover:bg-[#0D6096] disabled:opacity-50 text-white font-semibold"
+              >
+                {sendingPriceInquiry ? 'Submitting Request...' : 'Send Price Quote Request'}
+              </button>
+
+              <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                <p className="text-[11px] font-semibold text-slate-500">Or contact Seven Sunday Sales immediately:</p>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPriceInquiryProduct(null);
+                      setTab('messages');
+                    }}
+                    className="min-h-[38px] inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] dark:hover:bg-slate-800 font-medium"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5 text-[#1178B9]" />
+                    <span>Message</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={callPhase !== 'idle'}
+                    onClick={() => {
+                      setPriceInquiryProduct(null);
+                      setTab('audio_call');
+                      startCall({
+                        targetUid: 'support_queue',
+                        targetName: 'Seven Sunday Sales Desk',
+                        callType: 'audio',
+                        targetQueue: true,
+                      });
+                    }}
+                    className="min-h-[38px] inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] dark:hover:bg-slate-800 font-medium disabled:opacity-50"
+                  >
+                    <Phone className="w-3.5 h-3.5 text-[#1178B9]" />
+                    <span>Voice Call</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={callPhase !== 'idle'}
+                    onClick={() => {
+                      setPriceInquiryProduct(null);
+                      setTab('video_call');
+                      startCall({
+                        targetUid: 'support_queue',
+                        targetName: 'Seven Sunday Sales Desk',
+                        callType: 'video',
+                        targetQueue: true,
+                      });
+                    }}
+                    className="min-h-[38px] inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] dark:hover:bg-slate-800 font-medium disabled:opacity-50"
+                  >
+                    <Video className="w-3.5 h-3.5 text-[#1178B9]" />
+                    <span>Video Call</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Printable Invoice Modal */}
       <DocumentPreviewModal

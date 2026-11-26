@@ -165,7 +165,7 @@ describe('Logout Buttons Across All Parts of the Application', () => {
     expect(logoutMock).toHaveBeenCalledTimes(1);
   });
 
-  it('shows working Log Out button in AdminDashboard', () => {
+  it('does NOT render an unwanted Log Out button inside AdminDashboard tabs', () => {
     render(
       React.createElement(AdminDashboard, {
         users: [],
@@ -176,9 +176,7 @@ describe('Logout Buttons Across All Parts of the Application', () => {
         transactions: [],
       })
     );
-    const btn = screen.getByRole('button', { name: /Log Out/i });
-    fireEvent.click(btn);
-    expect(logoutMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: /Log Out/i })).not.toBeInTheDocument();
   });
 
   it('shows working Log Out buttons in EmployeeWorkspace header and sidebar', () => {
@@ -206,7 +204,7 @@ describe('Logout Buttons Across All Parts of the Application', () => {
     expect(profileLogoutBtns.length).toBeGreaterThanOrEqual(3);
   });
 
-  it('shows working Log Out button inside MeetingRoom passcode gate and active meeting header', async () => {
+  it('does NOT render an unwanted Log Out button inside MeetingRoom views', () => {
     const meeting = {
       id: 'm1',
       title: 'Weekly Sync',
@@ -228,12 +226,10 @@ describe('Logout Buttons Across All Parts of the Application', () => {
     const { rerender } = render(
       React.createElement(MeetingRoom, { meeting, onLeave: vi.fn() })
     );
-    fireEvent.click(screen.getByRole('button', { name: /Log Out/i }));
-    await waitFor(() => expect(logoutMock).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('button', { name: /Log Out/i })).not.toBeInTheDocument();
 
     const openMeeting = { ...meeting, passcode: '', hostUid: 'u1' };
     rerender(React.createElement(MeetingRoom, { meeting: openMeeting, onLeave: vi.fn() }));
-    fireEvent.click(screen.getByRole('button', { name: /Log Out/i }));
-    await waitFor(() => expect(logoutMock).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole('button', { name: /Log Out/i })).not.toBeInTheDocument();
   });
 });

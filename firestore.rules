@@ -303,10 +303,10 @@ service cloud.firestore {
     }
 
     function isValidProduct(data) {
-      return data.keys().hasAll(['name', 'sku', 'category', 'price', 'currency', 'stock', 'active', 'createdBy', 'createdAt', 'updatedAt'])
+      return data.keys().hasAll(['name', 'sku', 'category', 'currency', 'stock', 'active', 'createdBy', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
           'name', 'sku', 'category', 'categoryId', 'description', 'unit', 'specifications',
-          'price', 'currency', 'stock', 'availabilityStatus', 'imageUrl', 'galleryImages',
+          'price', 'contactForPrice', 'currency', 'stock', 'availabilityStatus', 'imageUrl', 'galleryImages',
           'active', 'createdBy', 'isDemo', 'demoBatchId', 'createdAt', 'updatedAt'
         ])
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 160
@@ -316,7 +316,9 @@ service cloud.firestore {
         && (!('description' in data) || (data.description is string && data.description.size() <= 2000))
         && (!('unit' in data) || (data.unit is string && data.unit.size() <= 40))
         && (!('specifications' in data) || (data.specifications is list && data.specifications.size() <= 40))
-        && data.price is number && data.price >= 0
+        && (!('contactForPrice' in data) || data.contactForPrice is bool)
+        && (!('price' in data) || (data.price is number && data.price >= 0))
+        && (('price' in data && data.price is number && data.price >= 0) || ('contactForPrice' in data && data.contactForPrice == true))
         && data.currency is string && data.currency.size() >= 1 && data.currency.size() <= 8
         && data.stock is number && data.stock >= 0
         && (!('availabilityStatus' in data) || data.availabilityStatus in ['in_stock', 'low_stock', 'out_of_stock', 'preorder'])
@@ -464,7 +466,7 @@ service cloud.firestore {
       return data.keys().hasAll(['targetUid', 'type', 'title', 'body', 'read', 'createdAt'])
         && data.keys().hasOnly(['targetUid', 'type', 'title', 'body', 'linkTab', 'linkId', 'read', 'createdAt'])
         && isValidId(data.targetUid)
-        && data.type in ['meeting', 'message', 'order', 'support', 'security', 'system', 'call']
+        && data.type in ['meeting', 'message', 'order', 'support', 'security', 'system', 'call', 'product']
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 140
         && data.body is string && data.body.size() >= 1 && data.body.size() <= 500
         && (!('linkTab' in data) || (data.linkTab is string && data.linkTab.size() <= 64))

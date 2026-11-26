@@ -217,6 +217,7 @@ export interface Product {
   unit?: string;
   specifications?: ProductSpecification[];
   price: number;
+  contactForPrice?: boolean;
   currency: string;
   stock: number;
   availabilityStatus?: ProductAvailabilityStatus;
@@ -385,13 +386,31 @@ export interface CustomerFeedback {
 export interface NotificationItem {
   id: string;
   targetUid: string;
-  type: 'meeting' | 'message' | 'order' | 'support' | 'security' | 'system' | 'call';
+  type: 'meeting' | 'message' | 'order' | 'support' | 'security' | 'system' | 'call' | 'product';
   title: string;
   body: string;
   linkTab?: string;
   linkId?: string;
   read: boolean;
   createdAt: string;
+}
+
+export type BroadcastChannel = 'in_app' | 'push' | 'email' | 'sms' | 'whatsapp' | 'telegram';
+
+export interface ChannelDispatchOutcome {
+  requested: boolean;
+  configured: boolean;
+  attempted: number;
+  delivered: number;
+  failed: number;
+  fallbackUrl?: string;
+  detail?: string;
+}
+
+export interface ProductBroadcastReport {
+  inAppSaved: number;
+  totalRecipients: number;
+  channels: Record<'email' | 'sms' | 'whatsapp' | 'telegram' | 'websocket', ChannelDispatchOutcome>;
 }
 
 export interface AuditLog {

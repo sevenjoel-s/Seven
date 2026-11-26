@@ -14,7 +14,6 @@ import {
   Download,
   FileText,
   Hand,
-  LogOut,
   MessageSquare,
   Mic,
   MicOff,
@@ -66,7 +65,7 @@ interface WhiteboardStroke {
 const FALLBACK_ICE_CONFIG: RTCConfiguration = DEFAULT_RTC_CONFIGURATION;
 
 export const MeetingRoom: React.FC<MeetingRoomProps> = ({ meeting, onLeave }) => {
-  const { profile, getToken, logout } = useAuth();
+  const { profile, getToken } = useAuth();
   const { send: wsSend, subscribe: wsSubscribe, connected: wsConnected } = useWebSocket();
 
   const isHost = profile?.uid === meeting.hostUid;
@@ -581,11 +580,6 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ meeting, onLeave }) =>
     onLeave();
   };
 
-  const handleLogoutFromMeeting = async () => {
-    await handleExitMeeting();
-    await logout();
-  };
-
   const handleAdmit = async (uid: string, allow: boolean) => {
     await updateDoc(doc(db, 'meetings', meeting.id, 'participants', uid), {
       status: allow ? 'admitted' : 'rejected',
@@ -639,30 +633,20 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ meeting, onLeave }) =>
           placeholder="Enter meeting passcode"
           className="w-full min-h-[44px] rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F5F8FC] dark:bg-slate-950 px-3 py-2 text-sm text-[#293858] dark:text-slate-100"
         />
-        <div className="flex flex-wrap justify-between gap-2">
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onLeave} className="min-h-[44px] px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium">
+            Cancel
+          </button>
           <button
             type="button"
-            onClick={handleLogoutFromMeeting}
-            className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 text-xs font-medium"
+            onClick={() => {
+              if (passcodeInput.trim() === meeting.passcode) setPasscodeVerified(true);
+              else setMediaNotice('Incorrect meeting passcode.');
+            }}
+            className="min-h-[44px] px-4 py-2 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white text-xs font-medium"
           >
-            <LogOut className="w-3.5 h-3.5" />
-            Log Out
+            Verify & Join
           </button>
-          <div className="flex gap-2">
-            <button type="button" onClick={onLeave} className="min-h-[44px] px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium">
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (passcodeInput.trim() === meeting.passcode) setPasscodeVerified(true);
-                else setMediaNotice('Incorrect meeting passcode.');
-              }}
-              className="min-h-[44px] px-4 py-2 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white text-xs font-medium"
-            >
-              Verify & Join
-            </button>
-          </div>
         </div>
         {mediaNotice && <p className="text-xs text-red-600">{mediaNotice}</p>}
       </div>
@@ -678,19 +662,9 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ meeting, onLeave }) =>
           You are in the waiting room for <strong>{meeting.title}</strong>. The host ({meeting.hostName}) will admit you shortly.
         </p>
         {mediaNotice && <p className="text-xs text-red-600">{mediaNotice}</p>}
-        <div className="flex flex-wrap items-center justify-center gap-2">
-          <button type="button" onClick={onLeave} className="min-h-[44px] px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium">
-            Leave Waiting Room
-          </button>
-          <button
-            type="button"
-            onClick={handleLogoutFromMeeting}
-            className="min-h-[44px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 text-xs font-medium"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            Log Out
-          </button>
-        </div>
+        <button type="button" onClick={onLeave} className="min-h-[44px] px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium">
+          Leave Waiting Room
+        </button>
       </div>
     );
   }
@@ -736,14 +710,6 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ meeting, onLeave }) =>
               Save Recording
             </a>
           )}
-          <button
-            type="button"
-            onClick={handleLogoutFromMeeting}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/20 hover:bg-red-600/80 text-white font-medium whitespace-nowrap shrink-0"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            <span>Log Out</span>
-          </button>
         </div>
       </div>
 
