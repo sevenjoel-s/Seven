@@ -39,6 +39,7 @@ import {
   placeOrderWithTransaction,
   saveCustomerDeliveryAddress,
   savePersistentCart,
+  triggerLocalDeviceNotification,
 } from '../../lib/firestoreActions';
 import {
   AvailabilityStatus,
@@ -83,11 +84,19 @@ type CustomerTab =
 export const CustomerPortal: React.FC = () => {
   const { profile, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const { connected: wsConnected } = useWebSocket();
+  const { connected: wsConnected, subscribe: wsSubscribe } = useWebSocket();
   const { phase: callPhase, startCall } = useDirectCall();
 
   const [tab, setTab] = useState<CustomerTab>('home');
   const [mobileMenu, setMobileMenu] = useState(false);
+  const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
+  const [liveProductAlert, setLiveProductAlert] = useState<{
+    productId?: string;
+    name: string;
+    sku: string;
+    priceLabel?: string;
+    publisherName?: string;
+  } | null>(null);
 
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<ProductCategory[]>([]);
@@ -140,7 +149,7 @@ export const CustomerPortal: React.FC = () => {
   const [activeMeeting, setActiveMeeting] = useState<Meeting | null>(null);
 
   // Notifications filter
-  const [notifFilter, setNotifFilter] = useState<'all' | 'order' | 'call' | 'message' | 'support'>('all');
+  const [notifFilter, setNotifFilter] = useState<'all' | 'product' | 'order' | 'call' | 'message' | 'support'>('all');
 
   // Profile & Address forms
   const [profName, setProfName] = useState(profile?.fullName || '');
@@ -280,6 +289,34 @@ export const CustomerPortal: React.FC = () => {
       unsubSettings();
     };
   }, [profile?.uid]);
+
+  useEffect(() => {
+    const unsubProductWs = wsSubscribe((event) => {
+      if (event.type === 'product:published' && event.payload) {
+        const p = event.payload as {
+          productId?: string;
+          name?: string;
+          sku?: string;
+          priceLabel?: string;
+          publisherName?: string;
+        };
+        if (p.name) {
+          setLiveProductAlert({
+            productId: p.productId,
+            name: p.name,
+            sku: p.sku || '',
+            priceLabel: p.priceLabel,
+            publisherName: p.publisherName,
+          });
+          triggerLocalDeviceNotification(
+            `New Product: ${p.name}`,
+            `${p.sku ? `SKU ${p.sku} · ` : ''}${p.priceLabel || 'Available now in 7Sunday Ethiopia Catalog'}`
+          );
+        }
+      }
+    });
+    return () => unsubProductWs();
+  }, [wsSubscribe]);
 
   const activeCatalogProducts = useMemo(
     () => products.filter((p) => showDemoData || !p.isDemo),
@@ -661,11 +698,43 @@ export const CustomerPortal: React.FC = () => {
     { id: 'security', label: 'Sync & Security', shortLabel: 'Security', Icon: Shield },
   ];
 
+  const openSupportConversation = async (subject: string, orderId?: string) => {
+    if (!profile) return;
+    const now = new Date().toISOString();
+    const convRef = await addDoc(collection(db, 'conversations'), {
+      type: 'support',
+      scope: 'support',
+      name: subject.slice(0, 120),
+      ...(orderId ? { orderId } : {}),
+      createdBy: profile.uid,
+      memberUids: [profile.uid],
+      adminUids: [profile.uid],
+      lastMessageText: subject,
+      lastMessageAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await setDoc(doc(db, 'conversations', convRef.id, 'members', profile.uid), {
+      uid: profile.uid,
+      displayName: profile.fullName,
+      role: 'admin',
+      joinedAt: now,
+    });
+    setSelectedConvId(convRef.id);
+    setTab('messages');
+  };
+
   const handleNotificationClick = async (n: NotificationItem) => {
     if (!n.read) {
       updateDoc(doc(db, 'notifications', n.id), { read: true }).catch(() => {});
     }
-    if (n.type === 'order') {
+    if (n.type === 'product' || n.linkTab === 'products') {
+      setTab('products');
+      if (n.linkId) {
+        const matched = activeCatalogProducts.find((p) => p.id === n.linkId);
+        if (matched) setDetailProduct(matched);
+      }
+    } else if (n.type === 'order') {
       if (n.linkId) setTrackedOrderId(n.linkId);
       setTab('tracking');
     } else if (n.type === 'call') {
@@ -736,21 +805,11 @@ export const CustomerPortal: React.FC = () => {
           </nav>
         </div>
 
-        <div className="p-4 border-t border-white/10 space-y-3 text-xs bg-[#293858] shrink-0">
-          <div>
-            <p className="font-semibold truncate text-white">{profile?.fullName}</p>
-            <p className="text-[#EAF4FF]/75 truncate">
-              {wsConnected ? 'Live Sync Active' : 'Connecting...'}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={logout}
-            className="w-full min-h-[40px] inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-white/20 hover:bg-white/10 font-medium text-white"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            Log Out
-          </button>
+        <div className="p-4 border-t border-white/10 text-xs bg-[#293858] shrink-0">
+          <p className="font-semibold truncate text-white">{profile?.fullName}</p>
+          <p className="text-[#EAF4FF]/75 truncate">
+            {wsConnected ? 'Live Sync Active' : 'Connecting...'}
+          </p>
         </div>
       </aside>
 
@@ -872,6 +931,45 @@ export const CustomerPortal: React.FC = () => {
               <button type="button" onClick={() => setFormError(null)}><X className="w-3.5 h-3.5" /></button>
             </div>
           )}
+          {liveProductAlert && (
+            <div
+              role="status"
+              className="rounded-xl border border-[#1178B9]/40 bg-[#EAF4FF] dark:bg-[#082B59]/60 p-3.5 text-xs text-[#082B59] dark:text-[#EAF4FF] flex flex-wrap items-center justify-between gap-3"
+            >
+              <div className="flex items-center gap-2.5">
+                <Bell className="w-4 h-4 text-[#1178B9] shrink-0" />
+                <div>
+                  <span className="font-bold">New Product Posted: {liveProductAlert.name}</span>
+                  {liveProductAlert.sku && <span className="ml-1.5 font-mono">({liveProductAlert.sku})</span>}
+                  {liveProductAlert.priceLabel && <span className="ml-1.5">· {liveProductAlert.priceLabel}</span>}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTab('products');
+                    if (liveProductAlert.productId) {
+                      const matched = activeCatalogProducts.find((p) => p.id === liveProductAlert.productId);
+                      if (matched) setDetailProduct(matched);
+                    }
+                    setLiveProductAlert(null);
+                  }}
+                  className="min-h-[34px] px-3 py-1 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white font-semibold"
+                >
+                  View Product
+                </button>
+                <button
+                  type="button"
+                  aria-label="Dismiss product alert"
+                  onClick={() => setLiveProductAlert(null)}
+                  className="min-h-[34px] min-w-[34px] inline-flex items-center justify-center rounded-lg border border-[#1178B9]/30 hover:bg-white/60 dark:hover:bg-slate-800"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* 1. HOME */}
           {tab === 'home' && (
@@ -911,6 +1009,29 @@ export const CustomerPortal: React.FC = () => {
                     className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-white/25 hover:bg-white/10 text-white text-xs font-semibold"
                   >
                     <Phone className="w-4 h-4" /> Call Support
+                  </button>
+                  <button
+                    type="button"
+                    disabled={callPhase !== 'idle'}
+                    onClick={() => {
+                      setTab('video_call');
+                      startCall({
+                        targetUid: 'support_queue',
+                        targetName: 'Seven Sunday Customer Service',
+                        callType: 'video',
+                        targetQueue: true,
+                      });
+                    }}
+                    className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-white/25 hover:bg-white/10 text-white text-xs font-semibold"
+                  >
+                    <Video className="w-4 h-4" /> Video Call
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTab('messages')}
+                    className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-white/25 hover:bg-white/10 text-white text-xs font-semibold"
+                  >
+                    <MessageSquare className="w-4 h-4" /> Live Chat
                   </button>
                 </div>
               </div>
@@ -1605,6 +1726,47 @@ export const CustomerPortal: React.FC = () => {
                         </button>
                         <button
                           type="button"
+                          onClick={() => openSupportConversation(`Order ${o.orderNumber} Support`, o.id)}
+                          className="min-h-[38px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] font-medium"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5 text-[#1178B9]" /> Chat
+                        </button>
+                        <button
+                          type="button"
+                          disabled={callPhase !== 'idle'}
+                          onClick={() => {
+                            setTab('audio_call');
+                            startCall({
+                              targetUid: 'support_queue',
+                              targetName: 'Seven Sunday Customer Service',
+                              callType: 'audio',
+                              orderId: o.id,
+                              targetQueue: true,
+                            });
+                          }}
+                          className="min-h-[38px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] disabled:opacity-40 font-medium"
+                        >
+                          <Phone className="w-3.5 h-3.5 text-[#1178B9]" /> Voice
+                        </button>
+                        <button
+                          type="button"
+                          disabled={callPhase !== 'idle'}
+                          onClick={() => {
+                            setTab('video_call');
+                            startCall({
+                              targetUid: 'support_queue',
+                              targetName: 'Seven Sunday Customer Service',
+                              callType: 'video',
+                              orderId: o.id,
+                              targetQueue: true,
+                            });
+                          }}
+                          className="min-h-[38px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] disabled:opacity-40 text-white font-medium"
+                        >
+                          <Video className="w-3.5 h-3.5" /> Video
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => setPreviewInvoiceOrder(o)}
                           className="min-h-[38px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] font-medium"
                         >
@@ -1703,13 +1865,23 @@ export const CustomerPortal: React.FC = () => {
               selectedOrderId={trackedOrderId}
               onSelectOrder={setTrackedOrderId}
               onViewInvoice={(order) => setPreviewInvoiceOrder(order)}
-              onMessageSupport={() => setTab('messages')}
+              onMessageSupport={(order) => openSupportConversation(`Order ${order.orderNumber} Support`, order.id)}
               onCallSupport={(order) => {
                 setTab('audio_call');
                 startCall({
                   targetUid: 'support_queue',
                   targetName: 'Seven Sunday Customer Service',
                   callType: 'audio',
+                  orderId: order.id,
+                  targetQueue: true,
+                });
+              }}
+              onVideoCallSupport={(order) => {
+                setTab('video_call');
+                startCall({
+                  targetUid: 'support_queue',
+                  targetName: 'Seven Sunday Customer Service',
+                  callType: 'video',
                   orderId: order.id,
                   targetQueue: true,
                 });
@@ -1730,14 +1902,15 @@ export const CustomerPortal: React.FC = () => {
           {tab === 'messages' && (
             <MessagingCenter
               mode="customer_support"
+              initialConversationId={selectedConvId}
               customerOrders={orders}
-              onStartInstantCall={(_title, inviteeUids) => {
+              onStartInstantCall={(_title, inviteeUids, _scope, callType = 'video') => {
                 const target = inviteeUids.find((id) => id !== profile?.uid) || 'support_queue';
-                setTab('video_call');
+                setTab(callType === 'audio' ? 'audio_call' : 'video_call');
                 startCall({
                   targetUid: target,
                   targetName: 'Seven Sunday Customer Care',
-                  callType: 'video',
+                  callType,
                   targetQueue: target === 'support_queue',
                 });
               }}
@@ -1749,7 +1922,7 @@ export const CustomerPortal: React.FC = () => {
             <div className="space-y-4">
               <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap items-center gap-1 p-1 rounded-lg bg-[#F3F5F8] dark:bg-slate-800 text-xs">
-                  {(['all', 'order', 'call', 'message', 'support'] as const).map((f) => (
+                  {(['all', 'product', 'order', 'call', 'message', 'support'] as const).map((f) => (
                     <button
                       key={f}
                       type="button"
@@ -1762,19 +1935,36 @@ export const CustomerPortal: React.FC = () => {
                     </button>
                   ))}
                 </div>
-                {unreadCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      notifications
-                        .filter((n) => !n.read)
-                        .forEach((n) => updateDoc(doc(db, 'notifications', n.id), { read: true }).catch(() => {}));
-                    }}
-                    className="min-h-[38px] px-3.5 py-1.5 rounded-lg bg-[#1178B9] text-white text-xs font-medium"
-                  >
-                    Mark All Read ({unreadCount})
-                  </button>
-                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {typeof window !== 'undefined' && 'Notification' in window && Notification.permission !== 'granted' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        Notification.requestPermission().then((perm) => {
+                          if (perm === 'granted') {
+                            setNotice('Device browser notifications enabled for new products, calls, and orders.');
+                          }
+                        });
+                      }}
+                      className="min-h-[38px] px-3.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] dark:hover:bg-slate-800 text-xs font-medium"
+                    >
+                      Enable Device Alerts
+                    </button>
+                  )}
+                  {unreadCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        notifications
+                          .filter((n) => !n.read)
+                          .forEach((n) => updateDoc(doc(db, 'notifications', n.id), { read: true }).catch(() => {}));
+                      }}
+                      className="min-h-[38px] px-3.5 py-1.5 rounded-lg bg-[#1178B9] text-white text-xs font-medium"
+                    >
+                      Mark All Read ({unreadCount})
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800">
@@ -1867,20 +2057,6 @@ export const CustomerPortal: React.FC = () => {
                 <button type="submit" className="w-full min-h-[42px] rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white text-xs font-semibold">
                   Save Profile Changes
                 </button>
-                <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
-                  <div className="text-xs">
-                    <p className="font-semibold text-[#15243A] dark:text-slate-100">Account Session</p>
-                    <p className="text-slate-500">Sign out of your 7Sunday Ethiopia account on this device.</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={logout}
-                    className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-950/50 text-xs font-semibold text-red-700 dark:text-red-300 whitespace-nowrap shrink-0"
-                  >
-                    <LogOut className="w-3.5 h-3.5" />
-                    Log Out
-                  </button>
-                </div>
               </form>
 
               <div className="lg:col-span-7 space-y-4">
@@ -2021,7 +2197,21 @@ export const CustomerPortal: React.FC = () => {
           )}
 
           {/* SECONDARY PRESERVED TABS */}
-          {tab === 'community' && <MessagingCenter mode="customer_community" />}
+          {tab === 'community' && (
+            <MessagingCenter
+              mode="customer_community"
+              onStartInstantCall={(_title, inviteeUids, _scope, callType = 'video') => {
+                const target = inviteeUids.find((id) => id !== profile?.uid) || 'support_queue';
+                setTab(callType === 'audio' ? 'audio_call' : 'video_call');
+                startCall({
+                  targetUid: target,
+                  targetName: 'Seven Sunday Customer Care',
+                  callType,
+                  targetQueue: target === 'support_queue',
+                });
+              }}
+            />
+          )}
           {tab === 'meetings' && (
             <MeetingsHub
               employees={[]}
@@ -2073,6 +2263,25 @@ export const CustomerPortal: React.FC = () => {
         onClose={() => setDetailProduct(null)}
         onAddToCart={addProductToCart}
         onContactForPrice={(prod, qty) => openPriceInquiry(prod, qty)}
+        onMessageSales={(prod) => openSupportConversation(`Product Inquiry: ${prod.name} (${prod.sku})`)}
+        onAudioCallSales={(prod) => {
+          setTab('audio_call');
+          startCall({
+            targetUid: 'support_queue',
+            targetName: `Sales Inquiry — ${prod.name}`,
+            callType: 'audio',
+            targetQueue: true,
+          });
+        }}
+        onVideoCallSales={(prod) => {
+          setTab('video_call');
+          startCall({
+            targetUid: 'support_queue',
+            targetName: `Sales Inquiry — ${prod.name}`,
+            callType: 'video',
+            targetQueue: true,
+          });
+        }}
       />
 
       {/* Contact for Price / Request Quote Modal */}

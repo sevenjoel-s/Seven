@@ -45,6 +45,7 @@ import {
   logAuditEvent,
   notifyAllUsersOfNewProduct,
   processOrderStatusWithAudit,
+  purgeAllRegisteredUsers,
   recordManualTransaction,
   removeOptionalDemoData,
   syncSupportRoutingDirectory,
@@ -83,6 +84,7 @@ interface AdminDashboardProps {
   transactions?: FinancialTransaction[];
   showDemoData?: boolean;
   onOpenCustomerChat?: (customer: UserAccount) => void;
+  onOpenDirectChat?: (user: UserAccount, opts?: { order?: CustomerOrder; subject?: string }) => void;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
@@ -94,12 +96,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   transactions = [],
   showDemoData = false,
   onOpenCustomerChat,
+  onOpenDirectChat,
 }) => {
   const { profile, getToken, updateAvailability } = useAuth();
   const { phase: callPhase, startCall } = useDirectCall();
   const [tab, setTab] = useState<
     'users' | 'customers' | 'departments' | 'roles' | 'catalog' | 'orders' | 'calls' | 'finance' | 'security'
   >('users');
+  const [confirmPurgeUsers, setConfirmPurgeUsers] = useState(false);
+  const [purgingUsers, setPurgingUsers] = useState(false);
 
   const [invites, setInvites] = useState<EmployeeInvite[]>([]);
   const [customRoles, setCustomRoles] = useState<RoleDefinition[]>([]);
@@ -969,6 +974,62 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             resultCount={filteredUsers.length}
           />
 
+          {profile?.role === 'super_admin' && (
+            <div className="rounded-xl border border-red-200 dark:border-red-900/60 bg-red-50/70 dark:bg-red-950/20 p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div>
+                <p className="font-bold text-red-700 dark:text-red-300">
+                  Registered Users Management ({users.filter((u) => u.uid !== profile.uid).length} non-admin accounts)
+                </p>
+                <p className="text-red-700/80 dark:text-red-300/80">
+                  Remove all registered user profiles, directory records, carts, delivery addresses, and invites from Firestore while keeping your Super Admin session.
+                </p>
+              </div>
+              {!confirmPurgeUsers ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmPurgeUsers(true)}
+                  className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Remove All Registered Users
+                </button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={purgingUsers}
+                    onClick={async () => {
+                      if (!profile) return;
+                      setPurgingUsers(true);
+                      try {
+                        const res = await purgeAllRegisteredUsers(profile);
+                        setConfirmPurgeUsers(false);
+                        setNotice(
+                          `Removed ${res.deletedUsers} user accounts, ${res.deletedDirectories} directory entries, ${res.deletedInvites} invites, and ${res.deletedCustomerArtifacts} customer carts/addresses.`
+                        );
+                      } catch (err) {
+                        showError(err);
+                      } finally {
+                        setPurgingUsers(false);
+                      }
+                    }}
+                    className="min-h-[40px] px-3.5 py-2 rounded-lg bg-red-700 hover:bg-red-800 disabled:opacity-50 text-white font-semibold"
+                  >
+                    {purgingUsers ? 'Removing Users...' : 'Confirm Remove All'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={purgingUsers}
+                    onClick={() => setConfirmPurgeUsers(false)}
+                    className="min-h-[40px] px-3 py-2 rounded-lg border border-red-200 dark:border-red-800 bg-white dark:bg-slate-900 font-medium"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="border-b border-slate-200 dark:border-slate-800 bg-[#EAF4FF] dark:bg-slate-950 text-[#082B59] dark:text-slate-300">
@@ -1038,7 +1099,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <option value="blocked">Blocked</option>
                       </select>
                     </td>
-                    <td className="px-4 py-3 text-right space-x-2">
+                    <td className="px-4 py-3 text-right space-x-1.5 whitespace-nowrap">
                       {u.status === 'pending_approval' && (
                         <button
                           type="button"
@@ -1048,6 +1109,44 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <Check className="w-3 h-3" /> Approve
                         </button>
                       )}
+                      {u.uid !== profile?.uid && (
+                        <>
+                          {(onOpenDirectChat || (u.accountType === 'customer' && onOpenCustomerChat)) && (
+                            <button
+                              type="button"
+                              onClick={() => (onOpenDirectChat ? onOpenDirectChat(u) : onOpenCustomerChat?.(u))}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF]"
+                              title={`Message ${u.fullName}`}
+                            >
+                              <MessageSquare className="w-3 h-3 text-[#1178B9]" /> Chat
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            disabled={callPhase !== 'idle'}
+                            onClick={() => {
+                              setTab('calls');
+                              startCall({ targetUid: u.uid, targetName: u.fullName, callType: 'audio' });
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] disabled:opacity-40"
+                            title={`Voice call ${u.fullName}`}
+                          >
+                            <Phone className="w-3 h-3 text-[#1178B9]" /> Audio
+                          </button>
+                          <button
+                            type="button"
+                            disabled={callPhase !== 'idle'}
+                            onClick={() => {
+                              setTab('calls');
+                              startCall({ targetUid: u.uid, targetName: u.fullName, callType: 'video' });
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-[#1178B9] hover:bg-[#0D6096] disabled:opacity-40 text-white"
+                            title={`Video call ${u.fullName}`}
+                          >
+                            <Video className="w-3 h-3" /> Video
+                          </button>
+                        </>
+                      )}
                       {u.uid !== profile?.uid && profile?.role === 'super_admin' && (
                         <button
                           type="button"
@@ -1055,7 +1154,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             await deleteDoc(doc(db, 'users', u.uid));
                             await logAuditEvent(profile, 'USER_DELETED', 'user', u.uid, `Deleted ${u.email}`, 'critical');
                           }}
-                          className="text-red-600 hover:text-red-700"
+                          className="text-red-600 hover:text-red-700 align-middle"
                           title="Delete Account"
                         >
                           <Trash2 className="w-4 h-4 inline" />
@@ -1130,10 +1229,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           >
                             <Eye className="w-3.5 h-3.5 text-[#1178B9]" /> Orders
                           </button>
-                          {onOpenCustomerChat && (
+                          {(onOpenDirectChat || onOpenCustomerChat) && (
                             <button
                               type="button"
-                              onClick={() => onOpenCustomerChat(cust)}
+                              onClick={() => (onOpenDirectChat ? onOpenDirectChat(cust) : onOpenCustomerChat?.(cust))}
                               className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF]"
                             >
                               <MessageSquare className="w-3.5 h-3.5 text-[#1178B9]" /> Chat
@@ -1921,6 +2020,69 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </button>
                         </>
                       )}
+                      {(onOpenDirectChat || onOpenCustomerChat) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const targetUser =
+                              users.find((u) => u.uid === o.customerUid) ||
+                              ({
+                                uid: o.customerUid,
+                                email: '',
+                                fullName: o.customerName,
+                                accountType: 'customer',
+                                role: 'customer',
+                                status: 'active',
+                                availability: 'available',
+                                createdAt: o.createdAt,
+                                updatedAt: o.updatedAt,
+                              } as UserAccount);
+                            if (onOpenDirectChat) {
+                              onOpenDirectChat(targetUser, { order: o, subject: `Order ${o.orderNumber} Support` });
+                            } else {
+                              onOpenCustomerChat?.(targetUser);
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF]"
+                          title={`Chat with ${o.customerName}`}
+                        >
+                          <MessageSquare className="w-3.5 h-3.5 text-[#1178B9]" /> Chat
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={callPhase !== 'idle'}
+                        onClick={() => {
+                          setTab('calls');
+                          startCall({
+                            targetUid: o.customerUid,
+                            targetName: o.customerName,
+                            callType: 'audio',
+                            orderId: o.id,
+                          });
+                        }}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] disabled:opacity-40"
+                        title={`Voice call ${o.customerName}`}
+                      >
+                        <Phone className="w-3.5 h-3.5 text-[#1178B9]" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={callPhase !== 'idle'}
+                        onClick={() => {
+                          setTab('calls');
+                          startCall({
+                            targetUid: o.customerUid,
+                            targetName: o.customerName,
+                            callType: 'video',
+                            orderId: o.id,
+                          });
+                        }}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded bg-[#1178B9] hover:bg-[#0D6096] disabled:opacity-40 text-white"
+                        title={`Video call ${o.customerName}`}
+                      >
+                        <Video className="w-3.5 h-3.5" />
+                      </button>
                       <button
                         type="button"
                         onClick={() => setPreviewOrder(o)}
@@ -1950,24 +2112,78 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <p className="text-[#293858] dark:text-slate-300">{f.message}</p>
                   <p className="text-slate-400 mt-1">From {f.customerName} · Status: {f.status}</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (!profile || (!hasPermission(profile, 'orders', 'edit') && !hasPermission(profile, 'admin', 'manage'))) {
-                      setErrorMsg('Permission denied: cannot resolve support feedback.');
-                      return;
-                    }
-                    await updateDoc(doc(db, 'customerFeedback', f.id), {
-                      status: 'resolved',
-                      respondedBy: profile.uid,
-                      updatedAt: new Date().toISOString(),
-                    });
-                    await logAuditEvent(profile, 'FEEDBACK_RESOLVED', 'customerFeedback', f.id, `Resolved "${f.subject}"`);
-                  }}
-                  className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white font-medium"
-                >
-                  Mark Resolved
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  {(onOpenDirectChat || onOpenCustomerChat) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const targetUser =
+                          users.find((u) => u.uid === f.customerUid) ||
+                          ({
+                            uid: f.customerUid,
+                            email: '',
+                            fullName: f.customerName,
+                            accountType: 'customer',
+                            role: 'customer',
+                            status: 'active',
+                            availability: 'available',
+                            createdAt: f.createdAt,
+                            updatedAt: f.updatedAt,
+                          } as UserAccount);
+                        if (onOpenDirectChat) {
+                          onOpenDirectChat(targetUser, { subject: `Re: ${f.subject}` });
+                        } else {
+                          onOpenCustomerChat?.(targetUser);
+                        }
+                      }}
+                      className="min-h-[36px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF]"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5 text-[#1178B9]" /> Reply
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={callPhase !== 'idle'}
+                    onClick={() => {
+                      setTab('calls');
+                      startCall({ targetUid: f.customerUid, targetName: f.customerName, callType: 'audio' });
+                    }}
+                    className="min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] disabled:opacity-40"
+                    title={`Voice call ${f.customerName}`}
+                  >
+                    <Phone className="w-3.5 h-3.5 text-[#1178B9]" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={callPhase !== 'idle'}
+                    onClick={() => {
+                      setTab('calls');
+                      startCall({ targetUid: f.customerUid, targetName: f.customerName, callType: 'video' });
+                    }}
+                    className="min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#082B59] hover:bg-[#1178B9] disabled:opacity-40 text-white"
+                    title={`Video call ${f.customerName}`}
+                  >
+                    <Video className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!profile || (!hasPermission(profile, 'orders', 'edit') && !hasPermission(profile, 'admin', 'manage'))) {
+                        setErrorMsg('Permission denied: cannot resolve support feedback.');
+                        return;
+                      }
+                      await updateDoc(doc(db, 'customerFeedback', f.id), {
+                        status: 'resolved',
+                        respondedBy: profile.uid,
+                        updatedAt: new Date().toISOString(),
+                      });
+                      await logAuditEvent(profile, 'FEEDBACK_RESOLVED', 'customerFeedback', f.id, `Resolved "${f.subject}"`);
+                    }}
+                    className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white font-medium"
+                  >
+                    Mark Resolved
+                  </button>
+                </div>
               </div>
             ))}
           </div>

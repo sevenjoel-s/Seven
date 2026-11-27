@@ -72,6 +72,7 @@ describe('OrderTracking Component — Firestore Timeline View', () => {
     const onViewInvoice = vi.fn();
     const onMessageSupport = vi.fn();
     const onCallSupport = vi.fn();
+    const onVideoCallSupport = vi.fn();
 
     render(
       React.createElement(OrderTracking, {
@@ -79,6 +80,7 @@ describe('OrderTracking Component — Firestore Timeline View', () => {
         onViewInvoice,
         onMessageSupport,
         onCallSupport,
+        onVideoCallSupport,
       })
     );
 
@@ -98,10 +100,12 @@ describe('OrderTracking Component — Firestore Timeline View', () => {
 
     fireEvent.click(screen.getByText('Invoice & Print'));
     fireEvent.click(screen.getByText('Message Care'));
-    fireEvent.click(screen.getByText('Call About Order'));
+    fireEvent.click(screen.getByText('Voice Call'));
+    fireEvent.click(screen.getByText('Video Call'));
 
     expect(onViewInvoice).toHaveBeenCalledTimes(1);
     expect(onMessageSupport).toHaveBeenCalledTimes(1);
     expect(onCallSupport).toHaveBeenCalledTimes(1);
+    expect(onVideoCallSupport).toHaveBeenCalledTimes(1);
   });
 });

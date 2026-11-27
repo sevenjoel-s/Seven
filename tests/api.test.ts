@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { DecodedIdToken } from 'firebase-admin/auth';
 import { createApp } from '../server';
 
@@ -17,6 +17,7 @@ const mockUser = {
 describe('API Tests — Express Backend Endpoints & Security Headers', () => {
   let tempDir: string;
   let app: ReturnType<typeof createApp>;
+  const broadcastSpy = vi.fn(() => 3);
 
   beforeAll(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), '7sunday-uploads-'));
@@ -26,6 +27,7 @@ describe('API Tests — Express Backend Endpoints & Security Headers', () => {
         if (token === 'valid-test-token') return mockUser;
         throw new Error('Invalid token');
       },
+      broadcastAll: broadcastSpy,
     });
   });
 
@@ -190,5 +192,96 @@ describe('API Tests — Express Backend Endpoints & Security Headers', () => {
       });
     expect(validInvite.status).toBe(200);
     expect(validInvite.body.fallbackUrl).toContain('https://wa.me/251911000000');
+  });
+
+  it('POST /api/notifications/broadcast-product enforces auth, validates inputs, returns safe fallback URLs, and dispatches webhooks/WS', async () => {
+    const unauth = await request(app)
+      .post('/api/notifications/broadcast-product')
+      .send({ product: { name: 'Steel Pallet', sku: 'SP-1' } });
+    expect(unauth.status).toBe(401);
+
+    const missingFields = await request(app)
+      .post('/api/notifications/broadcast-product')
+      .set('Authorization', 'Bearer valid-test-token')
+      .send({ product: { name: 'Steel Pallet' } });
+    expect(missingFields.status).toBe(400);
+
+    const badUrl = await request(app)
+      .post('/api/notifications/broadcast-product')
+      .set('Authorization', 'Bearer valid-test-token')
+      .send({
+        product: { name: 'Steel Pallet', sku: 'SP-1' },
+        productUrl: 'javascript:alert(1)',
+      });
+    expect(badUrl.status).toBe(400);
+
+    broadcastSpy.mockClear();
+    const prevWebhook = process.env.SMTP_WEBHOOK_URL;
+    const prevFetch = globalThis.fetch;
+    try {
+      delete process.env.SMTP_WEBHOOK_URL;
+      const fallbackRes = await request(app)
+        .post('/api/notifications/broadcast-product')
+        .set('Authorization', 'Bearer valid-test-token')
+        .send({
+          product: {
+            id: 'p_1',
+            name: 'Heavy Conveyor Belt',
+            sku: 'CONV-55',
+            category: 'Machinery',
+            contactForPrice: true,
+          },
+          channels: ['in_app', 'push', 'email', 'sms', 'whatsapp', 'telegram'],
+          recipients: [
+            { uid: 'u_cust', fullName: 'Abebe', email: 'abebe@client.et', phone: '+251911223344' },
+          ],
+          productUrl: 'https://sevensundayethiopia.com/catalog',
+        });
+
+      expect(fallbackRes.status).toBe(200);
+      expect(fallbackRes.body.emailsCount).toBe(1);
+      expect(fallbackRes.body.phonesCount).toBe(1);
+      expect(fallbackRes.body.channels.websocket.delivered).toBe(3);
+      expect(fallbackRes.body.channels.email.fallbackUrl).toContain('mailto:');
+      expect(fallbackRes.body.channels.sms.fallbackUrl).toContain('sms:');
+      expect(fallbackRes.body.channels.whatsapp.fallbackUrl).toContain('https://api.whatsapp.com/send');
+      expect(fallbackRes.body.channels.telegram.fallbackUrl).toContain('https://t.me/share/url');
+      expect(broadcastSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'product:published',
+        })
+      );
+
+      // Verify webhook dispatch with HTML escaping when SMTP_WEBHOOK_URL is configured
+      process.env.SMTP_WEBHOOK_URL = 'https://mailer.internal.test/send';
+      const fetchMock = vi.fn<(_input: RequestInfo | URL, _init?: RequestInit) => Promise<globalThis.Response>>(
+        async () => ({ ok: true, status: 200 }) as unknown as globalThis.Response
+      );
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const webhookRes = await request(app)
+        .post('/api/notifications/broadcast-product')
+        .set('Authorization', 'Bearer valid-test-token')
+        .send({
+          product: {
+            id: 'p_2',
+            name: '<script>Pallet</script>',
+            sku: 'SP-99',
+          },
+          channels: ['email'],
+          recipients: [{ uid: 'u2', fullName: 'Buyer', email: 'buyer@client.et' }],
+        });
+
+      expect(webhookRes.status).toBe(200);
+      expect(webhookRes.body.channels.email.delivered).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const sentPayload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      expect(sentPayload.html).toContain('&lt;script&gt;Pallet&lt;/script&gt;');
+      expect(sentPayload.html).not.toContain('<script>Pallet</script>');
+    } finally {
+      globalThis.fetch = prevFetch;
+      if (prevWebhook === undefined) delete process.env.SMTP_WEBHOOK_URL;
+      else process.env.SMTP_WEBHOOK_URL = prevWebhook;
+    }
   });
 });

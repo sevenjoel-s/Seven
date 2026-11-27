@@ -158,11 +158,10 @@ describe('Logout Buttons Across All Parts of the Application', () => {
     expect(logoutMock).toHaveBeenCalledTimes(3);
   });
 
-  it('shows working Log Out button in SyncAndSecurityCenter', () => {
+  it('does NOT render a duplicate Log Out button in SyncAndSecurityCenter', () => {
     render(React.createElement(SyncAndSecurityCenter));
-    const btn = screen.getByRole('button', { name: /Log Out/i });
-    fireEvent.click(btn);
-    expect(logoutMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: /Log Out/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/Instant Device & Browser Alerts/i)).toBeInTheDocument();
   });
 
   it('does NOT render an unwanted Log Out button inside AdminDashboard tabs', () => {
@@ -179,15 +178,15 @@ describe('Logout Buttons Across All Parts of the Application', () => {
     expect(screen.queryByRole('button', { name: /Log Out/i })).not.toBeInTheDocument();
   });
 
-  it('shows working Log Out buttons in EmployeeWorkspace header and sidebar', () => {
+  it('shows exactly one working header Log Out button in EmployeeWorkspace (no duplicate sidebar Log Out)', () => {
     render(React.createElement(EmployeeWorkspace));
     const btns = screen.getAllByRole('button', { name: /Log Out/i });
-    expect(btns.length).toBeGreaterThanOrEqual(2);
+    expect(btns.length).toBe(1);
     fireEvent.click(btns[0]);
     expect(logoutMock).toHaveBeenCalledTimes(1);
   });
 
-  it('shows working Log Out buttons in CustomerPortal header, sidebar, and My Profile', () => {
+  it('shows exactly one working header Log Out button in CustomerPortal across Home and My Profile', () => {
     authState.profile = {
       ...authState.profile!,
       accountType: 'customer',
@@ -195,13 +194,13 @@ describe('Logout Buttons Across All Parts of the Application', () => {
     };
     render(React.createElement(CustomerPortal));
     const btns = screen.getAllByRole('button', { name: /Log Out/i });
-    expect(btns.length).toBeGreaterThanOrEqual(2);
-    fireEvent.click(btns[1]);
+    expect(btns.length).toBe(1);
+    fireEvent.click(btns[0]);
     expect(logoutMock).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole('button', { name: /My Profile/i }));
     const profileLogoutBtns = screen.getAllByRole('button', { name: /Log Out/i });
-    expect(profileLogoutBtns.length).toBeGreaterThanOrEqual(3);
+    expect(profileLogoutBtns.length).toBe(1);
   });
 
   it('does NOT render an unwanted Log Out button inside MeetingRoom views', () => {

@@ -16,6 +16,7 @@ import {
   Search,
   ShoppingBag,
   Truck,
+  Video,
 } from 'lucide-react';
 import { ORDER_STATUS_LABELS } from '../../lib/exportUtils';
 import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
@@ -74,6 +75,7 @@ export interface OrderTrackingProps {
   onViewInvoice?: (order: CustomerOrder) => void;
   onMessageSupport?: (order: CustomerOrder) => void;
   onCallSupport?: (order: CustomerOrder) => void;
+  onVideoCallSupport?: (order: CustomerOrder) => void;
   onCancelOrder?: (order: CustomerOrder) => void;
   onBrowseProducts?: () => void;
   callDisabled?: boolean;
@@ -86,6 +88,7 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({
   onViewInvoice,
   onMessageSupport,
   onCallSupport,
+  onVideoCallSupport,
   onCancelOrder,
   onBrowseProducts,
   callDisabled = false,
@@ -423,7 +426,17 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({
                         onClick={() => onCallSupport(trackedOrder)}
                         className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] disabled:opacity-50 text-white text-xs font-medium whitespace-nowrap shrink-0"
                       >
-                        <Phone className="w-3.5 h-3.5" /> Call About Order
+                        <Phone className="w-3.5 h-3.5" /> Voice Call
+                      </button>
+                    )}
+                    {onVideoCallSupport && (
+                      <button
+                        type="button"
+                        disabled={callDisabled}
+                        onClick={() => onVideoCallSupport(trackedOrder)}
+                        className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#082B59] hover:bg-[#082B59]/90 disabled:opacity-50 text-white text-xs font-medium whitespace-nowrap shrink-0"
+                      >
+                        <Video className="w-3.5 h-3.5" /> Video Call
                       </button>
                     )}
                     {onCancelOrder && (trackedOrder.status === 'pending' || trackedOrder.status === 'confirmed') && (

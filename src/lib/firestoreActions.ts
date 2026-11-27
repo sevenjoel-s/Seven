@@ -855,3 +855,106 @@ export async function removeOptionalDemoData(actor: UserAccount): Promise<number
   );
   return removed;
 }
+
+const PROTECTED_SUPER_ADMIN_EMAIL = 'sevenjoel326@gmail.com';
+
+export async function purgeAllRegisteredUsers(actor: UserAccount): Promise<{
+  deletedUsers: number;
+  deletedDirectories: number;
+  deletedInvites: number;
+  deletedCustomerArtifacts: number;
+}> {
+  if (actor.role !== 'super_admin') {
+    throw new Error('Permission denied: only the Super Administrator can remove all registered users.');
+  }
+
+  const [usersSnap, empDirSnap, custDirSnap, invitesSnap, cartsSnap, addrsSnap] = await Promise.all([
+    getDocs(collection(db, 'users')),
+    getDocs(collection(db, 'employeeDirectory')),
+    getDocs(collection(db, 'customerDirectory')),
+    getDocs(collection(db, 'employeeInvites')),
+    getDocs(collection(db, 'shoppingCarts')),
+    getDocs(collection(db, 'deliveryAddresses')),
+  ]);
+
+  const refsToDelete: Array<{ ref: ReturnType<typeof doc>; category: 'user' | 'dir' | 'invite' | 'artifact' }> = [];
+
+  usersSnap.docs.forEach((d) => {
+    const data = d.data() as Partial<UserAccount>;
+    const uid = data.uid || d.id;
+    const email = (data.email || '').toLowerCase();
+    if (uid === actor.uid || email === PROTECTED_SUPER_ADMIN_EMAIL) return;
+    refsToDelete.push({ ref: d.ref, category: 'user' });
+  });
+
+  empDirSnap.docs.forEach((d) => {
+    const uid = (d.data() as { uid?: string }).uid || d.id;
+    if (uid === actor.uid) return;
+    refsToDelete.push({ ref: d.ref, category: 'dir' });
+  });
+
+  custDirSnap.docs.forEach((d) => {
+    const uid = (d.data() as { uid?: string }).uid || d.id;
+    if (uid === actor.uid) return;
+    refsToDelete.push({ ref: d.ref, category: 'dir' });
+  });
+
+  invitesSnap.docs.forEach((d) => {
+    refsToDelete.push({ ref: d.ref, category: 'invite' });
+  });
+
+  cartsSnap.docs.forEach((d) => {
+    const uid = (d.data() as { customerUid?: string }).customerUid || d.id;
+    if (uid === actor.uid) return;
+    refsToDelete.push({ ref: d.ref, category: 'artifact' });
+  });
+
+  addrsSnap.docs.forEach((d) => {
+    const uid = (d.data() as { customerUid?: string }).customerUid;
+    if (uid === actor.uid) return;
+    refsToDelete.push({ ref: d.ref, category: 'artifact' });
+  });
+
+  const chunkSize = 400;
+  for (let i = 0; i < refsToDelete.length; i += chunkSize) {
+    const chunk = refsToDelete.slice(i, i + chunkSize);
+    const batch = writeBatch(db);
+    chunk.forEach((item) => batch.delete(item.ref));
+    await batch.commit();
+  }
+
+  await setDoc(doc(db, 'publicConfig', 'supportRouting'), {
+    agentUids: [actor.uid],
+    supportAgents: [
+      {
+        uid: actor.uid,
+        fullName: actor.fullName,
+        role: actor.role,
+        ...(actor.jobTitle ? { jobTitle: actor.jobTitle } : {}),
+        availability: actor.availability || 'available',
+      },
+    ],
+    updatedAt: new Date().toISOString(),
+  });
+
+  const deletedUsers = refsToDelete.filter((r) => r.category === 'user').length;
+  const deletedDirectories = refsToDelete.filter((r) => r.category === 'dir').length;
+  const deletedInvites = refsToDelete.filter((r) => r.category === 'invite').length;
+  const deletedCustomerArtifacts = refsToDelete.filter((r) => r.category === 'artifact').length;
+
+  await logAuditEvent(
+    actor,
+    'ALL_REGISTERED_USERS_PURGED',
+    'system',
+    'users_purge',
+    `Removed ${deletedUsers} user profile(s), ${deletedDirectories} directory entry(ies), ${deletedInvites} invite(s), and ${deletedCustomerArtifacts} cart/address record(s).`,
+    'critical'
+  );
+
+  return {
+    deletedUsers,
+    deletedDirectories,
+    deletedInvites,
+    deletedCustomerArtifacts,
+  };
+}

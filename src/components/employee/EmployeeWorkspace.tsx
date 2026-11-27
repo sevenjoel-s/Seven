@@ -22,7 +22,7 @@ import { useDirectCall } from '../../context/DirectCallContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useWebSocket } from '../../context/WebSocketContext';
 import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
-import { createNotification, syncSupportRoutingDirectory } from '../../lib/firestoreActions';
+import { createNotification, syncSupportRoutingDirectory, triggerLocalDeviceNotification } from '../../lib/firestoreActions';
 import { hasPermission, isAdminRole, ROLE_LABELS } from '../../lib/rbac';
 import {
   AvailabilityStatus,
@@ -50,7 +50,7 @@ type WorkspaceTab = 'overview' | 'messages' | 'calls' | 'meetings' | 'directory'
 export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = ({ initialJoinCode }) => {
   const { profile, updateAvailability, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const { connected: wsConnected, onlineUsers } = useWebSocket();
+  const { connected: wsConnected, onlineUsers, subscribe: wsSubscribe } = useWebSocket();
   const { phase: directCallPhase, startCall: startDirectCall } = useDirectCall();
 
   const [tab, setTab] = useState<WorkspaceTab>(initialJoinCode ? 'meetings' : 'overview');
@@ -73,6 +73,7 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
   const [dirSearch, setDirSearch] = useState('');
   const [dirDeptFilter, setDirDeptFilter] = useState('all');
+  const [liveProductBanner, setLiveProductBanner] = useState<{ name: string; sku: string; priceLabel?: string } | null>(null);
 
   const canAdmin = Boolean(profile && (isAdminRole(profile.role) || hasPermission(profile, 'admin', 'view')));
   const canReports = Boolean(profile && hasPermission(profile, 'reports', 'view'));
@@ -190,6 +191,22 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
     };
   }, [profile?.uid, canAdmin, canSupportOrOrders]);
 
+  useEffect(() => {
+    const unsubWs = wsSubscribe((event) => {
+      if (event.type === 'product:published' && event.payload) {
+        const p = event.payload as { name?: string; sku?: string; priceLabel?: string };
+        if (p.name) {
+          setLiveProductBanner({ name: p.name, sku: p.sku || '', priceLabel: p.priceLabel });
+          triggerLocalDeviceNotification(
+            `New Product Published: ${p.name}`,
+            `${p.sku ? `SKU ${p.sku} · ` : ''}${p.priceLabel || '7Sunday Ethiopia Catalog'}`
+          );
+        }
+      }
+    });
+    return () => unsubWs();
+  }, [wsSubscribe]);
+
   const onlineUidSet = useMemo(() => new Set(onlineUsers.map((u) => u.uid)), [onlineUsers]);
 
   const visibleMeetings = useMemo(
@@ -280,17 +297,20 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
     setTab('meetings');
   };
 
-  const openCustomerSupportChat = async (cust: UserAccount) => {
+  const openUserDirectChat = async (target: UserAccount, opts?: { order?: CustomerOrder; subject?: string }) => {
     if (!profile) return;
     const now = new Date().toISOString();
+    const isCustomer = target.accountType === 'customer';
+    const title = opts?.subject || (isCustomer ? `Support — ${target.fullName}` : `${profile.fullName} & ${target.fullName}`);
     const convRef = await addDoc(collection(db, 'conversations'), {
-      type: 'support',
-      scope: 'support',
-      name: `Support — ${cust.fullName}`,
+      type: isCustomer ? 'support' : 'direct_employee',
+      scope: isCustomer ? 'support' : 'internal',
+      name: title.slice(0, 120),
+      ...(opts?.order?.id ? { orderId: opts.order.id } : {}),
       createdBy: profile.uid,
-      memberUids: [profile.uid, cust.uid],
+      memberUids: [profile.uid, target.uid],
       adminUids: [profile.uid],
-      lastMessageText: 'Support conversation opened',
+      lastMessageText: opts?.subject ? `Conversation started: ${opts.subject}` : 'Conversation opened',
       lastMessageAt: now,
       createdAt: now,
       updatedAt: now,
@@ -381,31 +401,21 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
           </nav>
         </div>
 
-        <div className="p-4 border-t border-white/10 space-y-3 text-xs bg-[#293858]">
-          <div className="space-y-1">
-            <p className="font-semibold truncate text-white">{profile?.fullName}</p>
-            <p className="text-[#EAF4FF]/75 truncate">
-              {profile ? ROLE_LABELS[profile.role] : ''}
-            </p>
-            <select
-              value={profile?.availability || 'available'}
-              onChange={(e) => updateAvailability(e.target.value as AvailabilityStatus)}
-              className="w-full mt-1 min-h-[36px] rounded-lg border border-white/20 bg-[#082B59] text-white px-2.5 py-1.5 text-xs"
-            >
-              <option value="available">Available</option>
-              <option value="busy">Busy</option>
-              <option value="dnd">Do Not Disturb</option>
-              <option value="away">Away</option>
-            </select>
-          </div>
-          <button
-            type="button"
-            onClick={logout}
-            className="w-full min-h-[40px] inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-white/20 hover:bg-white/10 font-medium text-white"
+        <div className="p-4 border-t border-white/10 space-y-1 text-xs bg-[#293858]">
+          <p className="font-semibold truncate text-white">{profile?.fullName}</p>
+          <p className="text-[#EAF4FF]/75 truncate">
+            {profile ? ROLE_LABELS[profile.role] : ''}
+          </p>
+          <select
+            value={profile?.availability || 'available'}
+            onChange={(e) => updateAvailability(e.target.value as AvailabilityStatus)}
+            className="w-full mt-1 min-h-[36px] rounded-lg border border-white/20 bg-[#082B59] text-white px-2.5 py-1.5 text-xs"
           >
-            <LogOut className="w-3.5 h-3.5" />
-            Log Out
-          </button>
+            <option value="available">Available</option>
+            <option value="busy">Busy</option>
+            <option value="dnd">Do Not Disturb</option>
+            <option value="away">Away</option>
+          </select>
         </div>
       </aside>
 
@@ -454,7 +464,7 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
                           if (n.linkTab === 'meetings') setTab('meetings');
                           else if (n.linkTab === 'messages') setTab('messages');
                           else if (n.linkTab === 'calls' || n.type === 'call') setTab('calls');
-                          else if (n.linkTab === 'admin' && canAdmin) setTab('admin');
+                          else if ((n.linkTab === 'admin' || n.linkTab === 'products' || n.type === 'product') && canAdmin) setTab('admin');
                           setShowNotifications(false);
                         }}
                         className={`p-2.5 rounded-lg border text-xs cursor-pointer ${
@@ -489,6 +499,43 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
         </header>
 
         <main className="flex-1 p-4 sm:p-6 pb-24 lg:pb-8 max-w-7xl w-full mx-auto space-y-6">
+          {liveProductBanner && (
+            <div
+              role="status"
+              className="rounded-xl border border-[#1178B9]/40 bg-[#EAF4FF] dark:bg-[#082B59]/60 p-3.5 text-xs text-[#082B59] dark:text-[#EAF4FF] flex flex-wrap items-center justify-between gap-3"
+            >
+              <div className="flex items-center gap-2.5">
+                <Bell className="w-4 h-4 text-[#1178B9] shrink-0" />
+                <span>
+                  <strong>New Product Posted: {liveProductBanner.name}</strong>
+                  {liveProductBanner.sku && <span className="ml-1.5 font-mono">({liveProductBanner.sku})</span>}
+                  {liveProductBanner.priceLabel && <span className="ml-1.5">· {liveProductBanner.priceLabel}</span>}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {canAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTab('admin');
+                      setLiveProductBanner(null);
+                    }}
+                    className="min-h-[32px] px-3 py-1 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white font-semibold"
+                  >
+                    Open Catalog
+                  </button>
+                )}
+                <button
+                  type="button"
+                  aria-label="Dismiss product broadcast"
+                  onClick={() => setLiveProductBanner(null)}
+                  className="min-h-[32px] min-w-[32px] inline-flex items-center justify-center rounded-lg border border-[#1178B9]/30 hover:bg-white/60 dark:hover:bg-slate-800"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
           {tab === 'overview' && (
             <div className="space-y-6">
               <div className="flex flex-wrap items-center justify-between gap-4">
@@ -604,13 +651,39 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
                           </p>
                         </div>
                         {emp.uid !== profile?.uid && (
-                          <button
-                            type="button"
-                            onClick={() => startDirectMessage(emp)}
-                            className="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] dark:hover:bg-slate-800"
-                          >
-                            Message
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => startDirectMessage(emp)}
+                              className="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] dark:hover:bg-slate-800"
+                            >
+                              Message
+                            </button>
+                            <button
+                              type="button"
+                              disabled={directCallPhase !== 'idle'}
+                              onClick={() => {
+                                setTab('calls');
+                                startDirectCall({ targetUid: emp.uid, targetName: emp.fullName, callType: 'audio' });
+                              }}
+                              aria-label={`Voice call ${emp.fullName}`}
+                              className="p-1.5 rounded border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] dark:hover:bg-slate-800 disabled:opacity-40"
+                            >
+                              <Phone className="w-3.5 h-3.5 text-[#1178B9]" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={directCallPhase !== 'idle'}
+                              onClick={() => {
+                                setTab('calls');
+                                startDirectCall({ targetUid: emp.uid, targetName: emp.fullName, callType: 'video' });
+                              }}
+                              aria-label={`Video call ${emp.fullName}`}
+                              className="p-1.5 rounded bg-[#1178B9] hover:bg-[#0D6096] disabled:opacity-40 text-white"
+                            >
+                              <Video className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         )}
                       </div>
                     ))}
@@ -624,11 +697,11 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
             <MessagingCenter
               mode="employee"
               initialConversationId={selectedConvId}
-              onStartInstantCall={(title, inviteeUids, scope) => {
+              onStartInstantCall={(title, inviteeUids, scope, callType = 'video') => {
                 const otherUid = inviteeUids.find((id) => id !== profile?.uid);
                 if (inviteeUids.length <= 2 && otherUid && directCallPhase === 'idle') {
                   setTab('calls');
-                  startDirectCall({ targetUid: otherUid, targetName: title, callType: 'video' });
+                  startDirectCall({ targetUid: otherUid, targetName: title, callType });
                 } else {
                   launchInstantCall(title, inviteeUids, scope);
                 }
@@ -708,20 +781,35 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
                       <span>{emp.departmentName || 'General Staff'}</span>
                     </div>
                     {emp.uid !== profile?.uid && (
-                      <div className="flex items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                      <div className="flex items-center gap-1.5 pt-2 border-t border-slate-100 dark:border-slate-800">
                         <button
                           type="button"
                           onClick={() => startDirectMessage(emp)}
-                          className="flex-1 min-h-[38px] inline-flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium hover:bg-[#EAF4FF] dark:hover:bg-slate-800"
+                          className="flex-1 min-h-[38px] inline-flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium hover:bg-[#EAF4FF] dark:hover:bg-slate-800"
                         >
-                          <MessageSquare className="w-3.5 h-3.5 text-[#1178B9]" /> Message
+                          <MessageSquare className="w-3.5 h-3.5 text-[#1178B9]" /> Chat
                         </button>
                         <button
                           type="button"
-                          onClick={() => launchInstantCall(`Call with ${emp.fullName}`, [emp.uid], 'internal')}
-                          className="flex-1 min-h-[38px] inline-flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white text-xs font-medium"
+                          disabled={directCallPhase !== 'idle'}
+                          onClick={() => {
+                            setTab('calls');
+                            startDirectCall({ targetUid: emp.uid, targetName: emp.fullName, callType: 'audio' });
+                          }}
+                          className="flex-1 min-h-[38px] inline-flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium hover:bg-[#EAF4FF] dark:hover:bg-slate-800 disabled:opacity-40"
                         >
-                          <Phone className="w-3.5 h-3.5" /> Call
+                          <Phone className="w-3.5 h-3.5 text-[#1178B9]" /> Voice
+                        </button>
+                        <button
+                          type="button"
+                          disabled={directCallPhase !== 'idle'}
+                          onClick={() => {
+                            setTab('calls');
+                            startDirectCall({ targetUid: emp.uid, targetName: emp.fullName, callType: 'video' });
+                          }}
+                          className="flex-1 min-h-[38px] inline-flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] disabled:opacity-40 text-white text-xs font-medium"
+                        >
+                          <Video className="w-3.5 h-3.5" /> Video
                         </button>
                       </div>
                     )}
@@ -763,7 +851,8 @@ export const EmployeeWorkspace: React.FC<{ initialJoinCode?: string | null }> = 
               feedback={feedback}
               transactions={transactions}
               showDemoData={showDemoData}
-              onOpenCustomerChat={openCustomerSupportChat}
+              onOpenCustomerChat={(cust) => openUserDirectChat(cust)}
+              onOpenDirectChat={openUserDirectChat}
             />
           )}
 

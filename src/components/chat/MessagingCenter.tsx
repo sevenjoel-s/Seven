@@ -59,7 +59,12 @@ import { DocumentPreviewModal } from '../shared/DocumentPreviewModal';
 
 interface MessagingCenterProps {
   mode: 'employee' | 'customer_support' | 'customer_community';
-  onStartInstantCall?: (title: string, inviteeUids: string[], scope: 'internal' | 'customer') => void;
+  onStartInstantCall?: (
+    title: string,
+    inviteeUids: string[],
+    scope: 'internal' | 'customer',
+    callType?: 'audio' | 'video'
+  ) => void;
   initialConversationId?: string | null;
   customerOrders?: CustomerOrder[];
 }
@@ -830,10 +835,12 @@ export const MessagingCenter: React.FC<MessagingCenterProps> = ({
                         onStartInstantCall(
                           `Audio Call — ${activeConv.name}`,
                           activeConv.memberUids,
-                          activeConv.scope === 'internal' ? 'internal' : 'customer'
+                          activeConv.scope === 'internal' ? 'internal' : 'customer',
+                          'audio'
                         )
                       }
                       title="Start Voice Call"
+                      aria-label="Start Voice Call"
                       className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-[#EAF4FF] dark:hover:bg-slate-800 text-[#293858] dark:text-slate-200"
                     >
                       <Phone className="w-4 h-4" />
@@ -844,10 +851,12 @@ export const MessagingCenter: React.FC<MessagingCenterProps> = ({
                         onStartInstantCall(
                           `Video Meeting — ${activeConv.name}`,
                           activeConv.memberUids,
-                          activeConv.scope === 'internal' ? 'internal' : 'customer'
+                          activeConv.scope === 'internal' ? 'internal' : 'customer',
+                          'video'
                         )
                       }
-                      title="Start Video Meeting"
+                      title="Start Video Call"
+                      aria-label="Start Video Call"
                       className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center p-2 rounded-lg bg-[#1178B9] hover:bg-[#0D6096] text-white"
                     >
                       <Video className="w-4 h-4" />

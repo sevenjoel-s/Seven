@@ -6,13 +6,13 @@ import {
   Fingerprint,
   KeyRound,
   Laptop,
-  LogOut,
   Mic,
   RefreshCw,
   Shield,
   Smartphone,
   Tablet,
   Volume2,
+  Bell,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
@@ -35,7 +35,7 @@ export function detectDeviceClass(ua = typeof navigator !== 'undefined' ? naviga
 }
 
 export const SyncAndSecurityCenter: React.FC = () => {
-  const { profile, getToken, requestPasswordReset, logout } = useAuth();
+  const { profile, getToken, requestPasswordReset } = useAuth();
   const [syncRecords, setSyncRecords] = useState<SyncRecord[]>([]);
   const [syncingType, setSyncingType] = useState<string | null>(null);
   const [autoSync, setAutoSync] = useState(() => window.localStorage.getItem('7sunday_autosync') !== 'false');
@@ -43,6 +43,9 @@ export const SyncAndSecurityCenter: React.FC = () => {
   // Biometrics & MFA
   const [biometricBusy, setBiometricBusy] = useState(false);
   const [securityNotice, setSecurityNotice] = useState<string | null>(null);
+  const [notifPerm, setNotifPerm] = useState<NotificationPermission | 'unsupported'>(() =>
+    typeof window !== 'undefined' && typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
+  );
 
   // Device settings
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -449,16 +452,36 @@ export const SyncAndSecurityCenter: React.FC = () => {
 
             <div className="pt-3 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className="font-medium text-sm">Session & Sign Out</p>
-                <p className="text-slate-500">End your current authenticated session on this device</p>
+                <p className="font-medium text-sm">Instant Device &amp; Browser Alerts</p>
+                <p className="text-slate-500">
+                  Receive live alerts for new products, orders, incoming calls, and support messages (
+                  {notifPerm === 'unsupported'
+                    ? 'Browser API unavailable'
+                    : notifPerm === 'granted'
+                    ? 'Enabled'
+                    : notifPerm === 'denied'
+                    ? 'Blocked in browser'
+                    : 'Not enabled'}
+                  ).
+                </p>
               </div>
               <button
                 type="button"
-                onClick={logout}
-                className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-950/50 text-red-700 dark:text-red-300 font-medium"
+                disabled={notifPerm === 'unsupported' || notifPerm === 'granted'}
+                onClick={async () => {
+                  if (typeof Notification === 'undefined') return;
+                  const perm = await Notification.requestPermission();
+                  setNotifPerm(perm);
+                  setSecurityNotice(
+                    perm === 'granted'
+                      ? 'Device push notifications enabled for new products, calls, and orders.'
+                      : 'Notification permission was not granted by the browser.'
+                  );
+                }}
+                className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 font-medium hover:bg-[#EAF4FF] dark:hover:bg-slate-800 disabled:opacity-50"
               >
-                <LogOut className="w-3.5 h-3.5" />
-                <span>Log Out</span>
+                <Bell className="w-3.5 h-3.5 text-[#1178B9]" />
+                <span>{notifPerm === 'granted' ? 'Alerts Enabled' : 'Enable Alerts'}</span>
               </button>
             </div>
           </div>

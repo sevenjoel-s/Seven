@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronLeft, ChevronRight, MessageSquare, Minus, Package, Plus, ShoppingCart, X } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, MessageSquare, Minus, Package, Phone, Plus, ShoppingCart, Video, X } from 'lucide-react';
 import { Product } from '../../types/domain';
 
 interface ProductDetailModalProps {
@@ -7,6 +7,9 @@ interface ProductDetailModalProps {
   onClose: () => void;
   onAddToCart: (product: Product, quantity: number) => void;
   onContactForPrice?: (product: Product, quantity: number) => void;
+  onMessageSales?: (product: Product) => void;
+  onAudioCallSales?: (product: Product) => void;
+  onVideoCallSales?: (product: Product) => void;
 }
 
 const AVAILABILITY_META: Record<NonNullable<Product['availabilityStatus']>, { label: string; cls: string }> = {
@@ -21,6 +24,9 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   onClose,
   onAddToCart,
   onContactForPrice,
+  onMessageSales,
+  onAudioCallSales,
+  onVideoCallSales,
 }) => {
   const [activeImageIdx, setActiveImageIdx] = useState(0);
   const [qty, setQty] = useState(1);
@@ -246,6 +252,48 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                 </button>
               )}
             </div>
+
+            {(onMessageSales || onAudioCallSales || onVideoCallSales) && (
+              <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-slate-500 font-medium mr-1">Ask Sales:</span>
+                {onMessageSales && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onMessageSales(product);
+                    }}
+                    className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] dark:hover:bg-slate-800 font-medium"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5 text-[#1178B9]" /> Chat
+                  </button>
+                )}
+                {onAudioCallSales && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onAudioCallSales(product);
+                    }}
+                    className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-[#EAF4FF] dark:hover:bg-slate-800 font-medium"
+                  >
+                    <Phone className="w-3.5 h-3.5 text-[#1178B9]" /> Voice Call
+                  </button>
+                )}
+                {onVideoCallSales && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onVideoCallSales(product);
+                    }}
+                    className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#082B59] hover:bg-[#1178B9] text-white font-medium"
+                  >
+                    <Video className="w-3.5 h-3.5" /> Video Call
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
